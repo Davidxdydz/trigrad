@@ -228,14 +228,17 @@ __global__ void render_forward_kernel(
         __syncthreads();
         for (int k = 0; k < n_prefetch && j + k < end && !stopped; k++)
         {
+            vec3 ws = {vertices[indices[per_tile_list[j + k]].a].w,
+                       vertices[indices[per_tile_list[j + k]].b].w,
+                       vertices[indices[per_tile_list[j + k]].c].w};
             vec3 bary = apply_cart_to_bary(&bary_transforms_shared[k * 9], pos);
             if (bary.x < 0.0 || bary.y < 0.0 || bary.z < 0.0)
                 continue;
             if (bary.x == 0 && bary.y == 0 && bary.z == 0)
                 continue;
-            scalar opacity = interpolate3(bary, opacities_shared[k * 3], opacities_shared[k * 3 + 1], opacities_shared[k * 3 + 2]);
+            scalar opacity = interpolate3(bary, opacities_shared[k * 3], opacities_shared[k * 3 + 1], opacities_shared[k * 3 + 2], ws);
             opacity = std::clamp(opacity, 0.0, max_opacity);
-            color3 color = interpolate3(bary, colors_shared[k * 3], colors_shared[k * 3 + 1], colors_shared[k * 3 + 2]);
+            color3 color = interpolate3(bary, colors_shared[k * 3], colors_shared[k * 3 + 1], colors_shared[k * 3 + 2], ws);
             total_color = total_color + alpha * opacity * color;
             alpha *= (1 - opacity);
             end_out = j + k + 1;
@@ -419,14 +422,16 @@ __global__ void render_backward_kernel(
         if (bary.x == 0 && bary.y == 0 && bary.z == 0)
             continue;
 
-        scalar opacity = interpolate3(bary, opacities[i3.a], opacities[i3.b], opacities[i3.c]);
+        vec3 ws = {vertices[i3.a].w, vertices[i3.b].w, vertices[i3.c].w};
+
+        scalar opacity = interpolate3(bary, opacities[i3.a], opacities[i3.b], opacities[i3.c], ws);
         opacity = std::clamp(opacity, 0.0, max_opacity);
 
-        color3 color = interpolate3(bary, colors[i3.a], colors[i3.b], colors[i3.c]);
+        color3 color = interpolate3(bary, colors[i3.a], colors[i3.b], colors[i3.c], ws);
         // opacity gradient
         scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);
 
-        auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] = interpolate3_backward(d_do, bary, opacities[i3.a], opacities[i3.b], opacities[i3.c], {1, 1, 1});
+        auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] = interpolate3_backward(d_do, bary, opacities[i3.a], opacities[i3.b], opacities[i3.c], ws);
         atomicAdd(&grad_opacities[i3.a], d_do1);
         atomicAdd(&grad_opacities[i3.b], d_do2);
         atomicAdd(&grad_opacities[i3.c], d_do3);
@@ -437,7 +442,7 @@ __global__ void render_backward_kernel(
 
         // color gradient
         color3 d_rgb_dc = alpha * opacity * grad_output[index];
-        auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] = interpolate3_backward(d_rgb_dc, bary, colors[i3.a], colors[i3.b], colors[i3.c], {1, 1, 1});
+        auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] = interpolate3_backward(d_rgb_dc, bary, colors[i3.a], colors[i3.b], colors[i3.c], ws);
 
         atomicAdd3(&grad_colors[i3.a], drgb_dc1);
         atomicAdd3(&grad_colors[i3.b], drgb_dc2);
@@ -449,9 +454,10 @@ __global__ void render_backward_kernel(
             d_dbary,
             xy(vertices[i3.a]), xy(vertices[i3.b]), xy(vertices[i3.c]),
             {x, y});
-        vec4 d_dva = {d_dvaxy.x, d_dvaxy.y, 0, 0};
-        vec4 d_dvb = {d_dvbxy.x, d_dvbxy.y, 0, 0};
-        vec4 d_dvc = {d_dvcxy.x, d_dvcxy.y, 0, 0};
+        vec3 d_dw = d_do_do_dw + drgb_dc_dc_dw;
+        vec4 d_dva = {d_dvaxy.x, d_dvaxy.y, 0, d_dw.x};
+        vec4 d_dvb = {d_dvbxy.x, d_dvbxy.y, 0, d_dw.y};
+        vec4 d_dvc = {d_dvcxy.x, d_dvcxy.y, 0, d_dw.z};
 
         atomicAdd4(&grad_vertices[i3.a], d_dva);
         atomicAdd4(&grad_vertices[i3.b], d_dvb);
