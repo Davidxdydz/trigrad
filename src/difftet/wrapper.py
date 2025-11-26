@@ -24,7 +24,7 @@ class Renderer(Function):
         record_timing: bool = False,
     ) -> torch.Tensor:
         N, _ = vertices.shape
-        check_tensor(vertices, "vertices", (N, 3))
+        check_tensor(vertices, "vertices", (N, 4))
         check_tensor(colors, "colors", (N, 3))
         check_tensor(opacities, "opacities", (N,))
         N, _ = indices.shape
@@ -110,7 +110,7 @@ def render(
     record_timing=False,
 ) -> torch.Tensor:
     """
-    vertices : (N, 3) tensor of triangle vertices
+    vertices : (N, 4) tensor of triangle vertices
     indices : (M, 3) tensor of triangle vertex indices
     colors : (N, 3) tensor of triangle vertex colors
     opacities : (N,) tensor of triangle vertex opacities

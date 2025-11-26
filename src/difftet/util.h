@@ -580,6 +580,15 @@ __device__ inline void atomicAdd3(color3 *address, color3 value)
     atomicAdd(&address->g, value.g);
     atomicAdd(&address->b, value.b);
 }
+
+__device__ inline void atomicAdd4(vec4 *address, vec4 value)
+{
+    atomicAdd(&address->x, value.x);
+    atomicAdd(&address->y, value.y);
+    atomicAdd(&address->z, value.z);
+    atomicAdd(&address->w, value.w);
+}
+
 const vec3 *const_vec3(torch::Tensor tensor);
 const vec2 *const_vec2(torch::Tensor tensor);
 vec2 *mutable_vec2(torch::Tensor tensor);

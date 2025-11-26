@@ -2,6 +2,12 @@ import numpy as np
 import torch
 
 
+def add_w(vertices):
+    N = vertices.shape[0]
+    w = torch.ones((N, 1), device=vertices.device, dtype=vertices.dtype)
+    return torch.cat([vertices, w], dim=1)
+
+
 def overlapping_squares(N, mins=0.1, maxs=0.9):
     vertices = []
     indices = []
@@ -23,9 +29,10 @@ def overlapping_squares(N, mins=0.1, maxs=0.9):
         colors.append(c)
         colors.append(c)
     vertices = torch.tensor(vertices)
-    vertices += 0.5
+    vertices[:, :2] += 0.5
     indices = torch.tensor(indices, dtype=torch.int32)
     colors = torch.tensor(colors)
+    vertices = add_w(vertices)
     return vertices, indices, colors
 
 
@@ -57,6 +64,7 @@ def large_trianlges(N, r=0.5, unicolor=False):
     vertices[:, :2] += 0.5
     indices = torch.tensor(indices, dtype=torch.int32)
     colors = torch.tensor(colors)
+    vertices = add_w(vertices)
     return vertices, indices, colors
 
 
@@ -88,6 +96,7 @@ def overlapping_triangles():
             [0, 0, 1],
         ],
     )
+    vertices = add_w(vertices)
     return vertices, indices, colors
 
 
@@ -113,6 +122,7 @@ def test_square():
             [1, 1, 1],
         ],
     )
+    vertices = add_w(vertices)
     return vertices, indices, colors
 
 
@@ -140,6 +150,7 @@ def grid_mesh(nx, ny, minx=0, maxx=1, miny=0, maxy=1):
     vertices = torch.tensor(vertices)
     indices = torch.tensor(indices, dtype=torch.int32)
     colors = torch.rand((vertices.shape[0], 3))
+    vertices = add_w(vertices)
     return vertices, indices, colors
 
 
@@ -176,4 +187,5 @@ def overlap_mesh():
         dtype=torch.int32,
     )
     colors = torch.rand((vertices.shape[0], 3), device="cuda", dtype=torch.float32)
+    vertices = add_w(vertices)
     return vertices, indices, colors

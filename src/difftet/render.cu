@@ -37,7 +37,6 @@ __device__ void touched_tiles(
 __device__ vec3 apply_cart_to_bary(const scalar *bary_matrices, vec2 p)
 {
 
-    // p is in [0,1] range
     // m is a 3x3 matrix M, to be applied to p' = (p.x, p.y, 1)^T like M * p'
     // the result are barycentric coordinates
     vec3 result;
@@ -49,7 +48,7 @@ __device__ vec3 apply_cart_to_bary(const scalar *bary_matrices, vec2 p)
 
 __global__ void count_per_tile_kernel(
     int *__restrict__ counts,                                           // output: how many triangles are in each tile
-    const vec3 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
+    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
     int triangle_count,                                                 // number of triangles
     int width, int height,                                              // image size
     int tile_width, int tile_height                                     // tile size
@@ -91,7 +90,7 @@ torch::Tensor count_per_tile(torch::Tensor vertices, torch::Tensor indices, int 
     int *counts_ptr = counts.mutable_data_ptr<int>();
     count_per_tile_kernel<<<blocks, threads_per_block>>>(
         counts_ptr,
-        const_vec3(vertices), const_id3(indices),
+        const_vec4(vertices), const_id3(indices),
         triangle_count,
         width, height,
         tile_width, tile_height);
@@ -101,7 +100,7 @@ torch::Tensor count_per_tile(torch::Tensor vertices, torch::Tensor indices, int 
 __global__ void fill_per_tile_lists_kernel(
     int *__restrict__ var_offsets,                                         // mutable data pointer to the offsets, this is used as an internal counter
     int *__restrict__ per_tile_list, scalar *__restrict__ per_tile_depths, // output: indices to triangles and depths per tile
-    const vec3 *__restrict__ vertices, const id3 *__restrict__ indices,    // vertices and indices of the triangles
+    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices,    // vertices and indices of the triangles
     const scalar *__restrict__ depths,                                     // depth of the triangles
     int triangle_count,                                                    // number of triangles
     int width, int height,                                                 // image size
@@ -165,17 +164,17 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> per_tile_lists(torch::Te
     fill_per_tile_lists_kernel<<<blocks, threads_per_block>>>(
         mutable_int(var_offsets),
         mutable_int(per_tile_list), mutable_scalar(per_tile_depths),
-        const_vec3(vertices),
+        const_vec4(vertices),
         const_id3(indices), const_scalar(depths), triangle_count, width, height, tile_width, tile_height);
 
     return {per_tile_list, per_tile_depths, offsets};
 }
 
 __global__ void render_forward_kernel(
-    color3 *__restrict__ image, scalar *final_opacity, int *__restrict__ ends,                                // output: color, final opacity, index of last rendered triangle per pixel
-    const scalar *bary_transforms,                                                                            // cartesian to barycentric matrices, 3x3 per triangle
-    const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle indices, colors and opacities
-    const int *__restrict__ per_tile_list, const int *__restrict__ offsets,                                   // values from sorting
+    color3 *__restrict__ image, scalar *final_opacity, int *__restrict__ ends,                                                                   // output: color, final opacity, index of last rendered triangle per pixel
+    const scalar *bary_transforms,                                                                                                               // cartesian to barycentric matrices, 3x3 per triangle
+    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle indices, colors and opacities
+    const int *__restrict__ per_tile_list, const int *__restrict__ offsets,                                                                      // values from sorting
     int width, int height,
     const scalar early_stopping_threshold
 
@@ -254,7 +253,7 @@ __global__ void render_forward_kernel(
 
 __global__ void cartesian_to_bary_kernel(
     scalar *__restrict__ output,                                        // output: barycentric transformation matrices nx3x3
-    const vec3 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
+    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
     int num_triangles                                                   // number of triangles
 )
 {
@@ -291,7 +290,7 @@ torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices)
     const dim3 blocks((triangle_count + threads_per_block.x - 1) / threads_per_block.x);
     cartesian_to_bary_kernel<<<blocks, threads_per_block>>>(
         mutable_scalar(output),
-        const_vec3(vertices),
+        const_vec4(vertices),
         const_id3(indices),
         triangle_count);
     return output;
@@ -377,6 +376,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     render_forward_kernel<<<blocks, threads_per_block>>>(
         mutable_color3(image), mutable_scalar(final_opacity), mutable_int(ends),
         const_scalar(bary_transforms),
+        const_vec4(vertices),
         const_id3(indices), const_color3(colors), const_scalar(opacities),
         const_int(ids), const_int(offsets),
         width, height,
@@ -386,12 +386,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 }
 
 __global__ void render_backward_kernel(
-    vec3 *__restrict__ grad_vertices, color3 *__restrict__ grad_colors, scalar *__restrict__ grad_opacities,                                     // output: gradients
+    vec4 *__restrict__ grad_vertices, color3 *__restrict__ grad_colors, scalar *__restrict__ grad_opacities,                                     // output: gradients
     const color3 *__restrict__ grad_output,                                                                                                      // upstream gradient
     const scalar *__restrict__ final_opacities, const int *__restrict__ ends,                                                                    // final opacities and indices
     const int *__restrict__ sorted_ids, const int *__restrict__ offsets,                                                                         // ids and offsets for sorted rendering
     const scalar *__restrict__ bary_transforms,                                                                                                  // cartesian to barycentric transformation matrices
-    const vec3 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle data
+    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle data
     int width, int height,                                                                                                                       // image size
     const scalar early_stopping_threshold                                                                                                        // remaining opacity at which to stop rendering
 )
@@ -449,13 +449,13 @@ __global__ void render_backward_kernel(
             d_dbary,
             xy(vertices[i3.a]), xy(vertices[i3.b]), xy(vertices[i3.c]),
             {x, y});
-        vec3 d_dva = {d_dvaxy.x, d_dvaxy.y, 0};
-        vec3 d_dvb = {d_dvbxy.x, d_dvbxy.y, 0};
-        vec3 d_dvc = {d_dvcxy.x, d_dvcxy.y, 0};
+        vec4 d_dva = {d_dvaxy.x, d_dvaxy.y, 0, 0};
+        vec4 d_dvb = {d_dvbxy.x, d_dvbxy.y, 0, 0};
+        vec4 d_dvc = {d_dvcxy.x, d_dvcxy.y, 0, 0};
 
-        atomicAdd3(&grad_vertices[i3.a], d_dva);
-        atomicAdd3(&grad_vertices[i3.b], d_dvb);
-        atomicAdd3(&grad_vertices[i3.c], d_dvc);
+        atomicAdd4(&grad_vertices[i3.a], d_dva);
+        atomicAdd4(&grad_vertices[i3.b], d_dvb);
+        atomicAdd4(&grad_vertices[i3.c], d_dvc);
     }
 }
 
@@ -480,12 +480,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     const dim3 threads_per_block(tile_width, tile_height);
     const dim3 blocks((width + threads_per_block.x - 1) / threads_per_block.x, (height + threads_per_block.y - 1) / threads_per_block.y);
     render_backward_kernel<<<blocks, threads_per_block>>>(
-        mutable_vec3(grad_vertices), mutable_color3(grad_colors), mutable_scalar(grad_opacities),
+        mutable_vec4(grad_vertices), mutable_color3(grad_colors), mutable_scalar(grad_opacities),
         const_color3(grad_output),
         const_scalar(final_opacities), const_int(ends),
         const_int(sorted_ids), const_int(offsets),
         const_scalar(bary_transforms),
-        const_vec3(vertices), const_id3(indices), const_color3(colors), const_scalar(opacities),
+        const_vec4(vertices), const_id3(indices), const_color3(colors), const_scalar(opacities),
         width, height,
         early_stopping_threshold);
     return {grad_vertices, grad_colors, grad_opacities};
