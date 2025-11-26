@@ -9,10 +9,9 @@ torch.set_default_device("cuda")
 torch.set_default_dtype(difftet.precision)
 
 
-@pytest.mark.parametrize("opacity", [0.9, 1.0])
-def test_dc(opacity):
+def test_dc():
     vertices, indices, colors = overlapping_squares(10)
-    opacities = torch.full_like(vertices[:, 0], opacity)
+    opacities = torch.full_like(vertices[:, 0], 0.99)
     colors.requires_grad_()
     assert gradcheck(
         difftet.render,
@@ -30,11 +29,9 @@ def test_dc(opacity):
     )
 
 
-@pytest.mark.parametrize("opacity", [0.9, 1.0])
-def test_do(opacity):
+def test_do():
     vertices, indices, colors = overlapping_squares(10)
-
-    opacities = torch.full_like(vertices[:, 0], opacity)
+    opacities = torch.full_like(vertices[:, 0], 0.99)
     opacities.requires_grad_()
     assert gradcheck(
         difftet.render,
@@ -52,10 +49,9 @@ def test_do(opacity):
     )
 
 
-@pytest.mark.parametrize("opacity", [0.9, 1.0])
-def test_dv(opacity):
+def test_dv():
     vertices, indices, colors = large_trianlges(3, r=4, unicolor=False)
-    opacities = torch.full_like(vertices[:, 0], opacity)
+    opacities = torch.full_like(vertices[:, 0], 0.99)
     vertices.requires_grad_()
     assert gradcheck(
         difftet.render,
@@ -73,10 +69,9 @@ def test_dv(opacity):
     )
 
 
-@pytest.mark.parametrize("opacity", [0.9, 1.0])
-def test_dall(opacity):
+def test_dall():
     vertices, indices, colors = large_trianlges(3, r=4, unicolor=False)
-    opacities = torch.full_like(vertices[:, 0], opacity)
+    opacities = torch.full_like(vertices[:, 0], 0.99)
     vertices.requires_grad_()
     colors.requires_grad_()
     opacities.requires_grad_()

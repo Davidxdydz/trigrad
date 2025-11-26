@@ -285,10 +285,7 @@ __device__ void bary_derivatives(
     vec2 &dp_da, vec2 &dp_db, vec2 &dp_dc, // output : d pixel / d (vertex(-position) a, b, c)
     scalar x, scalar y,                    // pixel coordinates
     vec2 va, vec2 vb, vec2 vc,             // vertex positions in screen space [0,1]²
-    color3 dp_dca,                         // d pixel / d (color r,g,b)
-    color3 ca, color3 cb, color3 cc,       // color at vertex a, b, c
-    scalar dp_do,                          // d pixel / d opacity
-    scalar oa, scalar ob, scalar oc,       // opacity at vertex a, b, c
+    vec3 grad_bary,                        // d pixel / d barycentric coordinates
     vec3 l                                 // barycentric coordinates
 )
 {
@@ -322,26 +319,13 @@ __device__ void bary_derivatives(
     dbb_dvc.y = (-va.x + l.y * (va.x - vb.x) + x) / d;
     dbc_dvc.y = l.z * (va.x - vb.x) / d;
 
-    // Opacity
-    // dp_do * (do/dba * dba_dva + do/dbb * dbb/dva...), with do/dba = oa
-    dp_da.x = dp_do * (oa * dba_dva.x + ob * dbb_dva.x + oc * dbc_dva.x);
-    dp_da.y = dp_do * (oa * dba_dva.y + ob * dbb_dva.y + oc * dbc_dva.y);
-    dp_db.x = dp_do * (oa * dba_dvb.x + ob * dbb_dvb.x + oc * dbc_dvb.x);
-    dp_db.y = dp_do * (oa * dba_dvb.y + ob * dbb_dvb.y + oc * dbc_dvb.y);
-    dp_dc.x = dp_do * (oa * dba_dvc.x + ob * dbb_dvc.x + oc * dbc_dvc.x);
-    dp_dc.y = dp_do * (oa * dba_dvc.y + ob * dbb_dvc.y + oc * dbc_dvc.y);
-
-    // Color
-    // dp_dcr * (dcr/dba * dba_dva + dcr/dbb * dbb/dva...), with dcr/dba = ca
-    // sum over each channel
-    dp_da.x += component_sum(dp_dca * (ca * dba_dva.x + cb * dbb_dva.x + cc * dbc_dva.x));
-    dp_da.y += component_sum(dp_dca * (ca * dba_dva.y + cb * dbb_dva.y + cc * dbc_dva.y));
-    dp_db.x += component_sum(dp_dca * (ca * dba_dvb.x + cb * dbb_dvb.x + cc * dbc_dvb.x));
-    dp_db.y += component_sum(dp_dca * (ca * dba_dvb.y + cb * dbb_dvb.y + cc * dbc_dvb.y));
-    dp_dc.x += component_sum(dp_dca * (ca * dba_dvc.x + cb * dbb_dvc.x + cc * dbc_dvc.x));
-    dp_dc.y += component_sum(dp_dca * (ca * dba_dvc.y + cb * dbb_dvc.y + cc * dbc_dvc.y));
+    dp_da.x = grad_bary.x * dba_dva.x + grad_bary.y * dbb_dva.x + grad_bary.z * dbc_dva.x;
+    dp_da.y = grad_bary.x * dba_dva.y + grad_bary.y * dbb_dva.y + grad_bary.z * dbc_dva.y;
+    dp_db.x = grad_bary.x * dba_dvb.x + grad_bary.y * dbb_dvb.x + grad_bary.z * dbc_dvb.x;
+    dp_db.y = grad_bary.x * dba_dvb.y + grad_bary.y * dbb_dvb.y + grad_bary.z * dbc_dvb.y;
+    dp_dc.x = grad_bary.x * dba_dvc.x + grad_bary.y * dbb_dvc.x + grad_bary.z * dbc_dvc.x;
+    dp_dc.y = grad_bary.x * dba_dvc.y + grad_bary.y * dbb_dvc.y + grad_bary.z * dbc_dvc.y;
 }
-
 torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices)
 {
     int triangle_count = indices.size(0);
@@ -357,7 +341,6 @@ torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices)
         triangle_count);
     return output;
 }
-
 struct CudaTimer
 {
     std::map<std::string, float> &timings;
@@ -480,19 +463,19 @@ __global__ void render_backward_kernel(
             continue;
         if (bary.x == 0 && bary.y == 0 && bary.z == 0)
             continue;
+
         scalar opacity = interpolate3(bary, opacities[i3.a], opacities[i3.b], opacities[i3.c]);
-        scalar dao_do = 1;
         opacity = std::clamp(opacity, 0.0, max_opacity);
 
         color3 color = interpolate3(bary, colors[i3.a], colors[i3.b], colors[i3.c]);
         // opacity gradient
-        color3 drgb_dao;
-        drgb_dao = (color * alpha - s) / (1 - opacity) * grad_output[index];
-        scalar grad_opacity = component_sum(drgb_dao) * dao_do;
+        color3 drgb_dao = (color * alpha - s) / (1 - opacity) * grad_output[index];
+        scalar grad_opacity = component_sum(drgb_dao);
 
-        atomicAdd(&grad_opacities[i3.a], grad_opacity * bary.x);
-        atomicAdd(&grad_opacities[i3.b], grad_opacity * bary.y);
-        atomicAdd(&grad_opacities[i3.c], grad_opacity * bary.z);
+        auto [grad_bary_opacity, grad_bary_o1, grad_bary_o2, grad_bary_o3, grad_bary_w] = interpolate3_backward(grad_opacity, bary, opacities[i3.a], opacities[i3.b], opacities[i3.c], {1, 1, 1});
+        atomicAdd(&grad_opacities[i3.a], grad_bary_o1);
+        atomicAdd(&grad_opacities[i3.b], grad_bary_o2);
+        atomicAdd(&grad_opacities[i3.c], grad_bary_o3);
 
         alpha /= (1.0 - opacity);
 
@@ -500,29 +483,27 @@ __global__ void render_backward_kernel(
 
         // color gradient
         color3 grad_color = alpha * opacity * grad_output[index];
-        // r
-        atomicAdd(&grad_colors[i3.a].r, grad_color.r * bary.x);
-        atomicAdd(&grad_colors[i3.b].r, grad_color.r * bary.y);
-        atomicAdd(&grad_colors[i3.c].r, grad_color.r * bary.z);
-        // g
-        atomicAdd(&grad_colors[i3.a].g, grad_color.g * bary.x);
-        atomicAdd(&grad_colors[i3.b].g, grad_color.g * bary.y);
-        atomicAdd(&grad_colors[i3.c].g, grad_color.g * bary.z);
-        // b
-        atomicAdd(&grad_colors[i3.a].b, grad_color.b * bary.x);
-        atomicAdd(&grad_colors[i3.b].b, grad_color.b * bary.y);
-        atomicAdd(&grad_colors[i3.c].b, grad_color.b * bary.z);
+        auto [grad_bary_color, grad_bary_c1, grad_bary_c2, grad_bary_c3, grad_bary_w2] = interpolate3_backward(grad_color, bary, colors[i3.a], colors[i3.b], colors[i3.c], {1, 1, 1});
 
+        // r
+        atomicAdd(&grad_colors[i3.a].r, grad_bary_c1.x);
+        atomicAdd(&grad_colors[i3.b].r, grad_bary_c2.x);
+        atomicAdd(&grad_colors[i3.c].r, grad_bary_c3.x);
+        // g
+        atomicAdd(&grad_colors[i3.a].g, grad_bary_c1.y);
+        atomicAdd(&grad_colors[i3.b].g, grad_bary_c2.y);
+        atomicAdd(&grad_colors[i3.c].g, grad_bary_c3.y);
+        // b
+        atomicAdd(&grad_colors[i3.a].b, grad_bary_c1.z);
+        atomicAdd(&grad_colors[i3.b].b, grad_bary_c2.z);
+        atomicAdd(&grad_colors[i3.c].b, grad_bary_c3.z);
         // vertex gradient
         vec2 dp_da, dp_db, dp_dc;
         bary_derivatives(
             dp_da, dp_db, dp_dc,
             x, y,
             xy(vertices[i3.a]), xy(vertices[i3.b]), xy(vertices[i3.c]),
-            grad_color,
-            colors[i3.a], colors[i3.b], colors[i3.c],
-            grad_opacity,
-            opacities[i3.a], opacities[i3.b], opacities[i3.c],
+            grad_bary_opacity + grad_bary_color,
             bary);
         atomicAdd(&grad_vertices[i3.a].x, dp_da.x);
         atomicAdd(&grad_vertices[i3.a].y, dp_da.y);
