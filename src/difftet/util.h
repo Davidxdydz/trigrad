@@ -19,36 +19,7 @@ using scalar = float;
 inline constexpr auto torchscalar = torch::kFloat32;
 #endif
 
-__host__ __device__ inline scalar safe_exp(scalar x)
-{
-
-    // Prevent overflow in exp
-    constexpr scalar cutoff = 40; //
-    scalar result = std::exp(x);
-    if (x > cutoff)
-        result = std::exp(cutoff); // std::numeric_limits<scalar>::max();
-    else if (x < -cutoff)
-        result = 0.0f;
-
-    return result;
-}
-
-__host__ __device__ inline scalar peps(scalar a, scalar eps = 1e-6)
-{
-    // auto add = std::copysign(eps, a);
-    // return a + add;
-
-    scalar result = a;
-    if (a < eps && a > -eps)
-    {
-        if (a > 0)
-            result = eps;
-        else
-            result = -eps;
-    }
-
-    return result;
-}
+static __device__ inline constexpr scalar max_opacity = 0.9999;
 
 __host__ __device__ inline vec3 operator*(const vec3 &a, const vec3 &b)
 {
@@ -266,6 +237,59 @@ __host__ __device__ inline scalar dot(const vec4 &a, const vec4 &b)
 {
 
     return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+__host__ __device__ inline std::tuple<vec3, scalar, scalar, scalar, vec3>
+interpolate3_backward(scalar d_dinter, vec3 bary, scalar a, scalar b, scalar c, const vec3 w)
+{
+
+    vec3 vals = {a, b, c};
+
+    scalar nom = component_sum(bary * w * vals);
+    scalar denom = component_sum(bary * w);
+    scalar inv_denom2 = 1 / (denom * denom);
+    vec3 dfd = (vals * w * denom - nom * w) * inv_denom2;
+    vec3 grad_bary = d_dinter * dfd;
+    vec3 grad_vals = d_dinter * bary * w / denom;
+    vec3 grad_w = d_dinter * (bary * vals * denom - nom * bary) * inv_denom2;
+
+    return {grad_bary, grad_vals.x, grad_vals.y, grad_vals.z, grad_w};
+}
+
+__host__ __device__ inline std::tuple<vec3, vec3, vec3, vec3, vec3>
+interpolate3_backward(vec3 d_dinter, vec3 bary, vec3 a, vec3 b, vec3 c, vec3 w)
+{
+
+    vec3 nom = bary.x * w.x * a + bary.y * w.y * b + bary.z * w.z * c;
+    scalar denom = bary.x * w.x + bary.y * w.y + bary.z * w.z;
+    scalar inv_denom2 = 1.0 / (denom * denom);
+
+    vec3 df_dbx = w.x * (a * denom - nom) * inv_denom2;
+    vec3 df_dby = w.y * (b * denom - nom) * inv_denom2;
+    vec3 df_dbz = w.z * (c * denom - nom) * inv_denom2;
+
+    vec3 grad_bary = {
+        dot(d_dinter, df_dbx),
+        dot(d_dinter, df_dby),
+        dot(d_dinter, df_dbz),
+    };
+
+    vec3 scale = bary * w / denom;
+
+    vec3 grad_a = d_dinter * scale.x;
+    vec3 grad_b = d_dinter * scale.y;
+    vec3 grad_c = d_dinter * scale.z;
+
+    vec3 df_dw0 = (bary.x * a * denom - nom * bary.x) * inv_denom2;
+    vec3 df_dw1 = (bary.y * b * denom - nom * bary.y) * inv_denom2;
+    vec3 df_dw2 = (bary.z * c * denom - nom * bary.z) * inv_denom2;
+
+    vec3 grad_w = {
+        dot(d_dinter, df_dw0),
+        dot(d_dinter, df_dw1),
+        dot(d_dinter, df_dw2)};
+
+    return {grad_bary, grad_a, grad_b, grad_c, grad_w};
 }
 
 __host__ __device__ inline vec3 mean(const vec3 &a, const vec3 &b, const vec3 &c)
@@ -560,21 +584,3 @@ const vec4 *const_vec4(torch::Tensor tensor);
 vec4 *mutable_vec4(torch::Tensor tensor);
 bool *mutable_bool(torch::Tensor tensor);
 const bool *const_bool(torch::Tensor tensor);
-
-__host__ __device__ inline void cnan(scalar &a)
-{
-    a = (std::isnan(a) || std::isinf(a)) ? 0.0f : a;
-}
-__host__ __device__ inline void cnan(vec3 &a)
-{
-    cnan(a.x);
-    cnan(a.y);
-    cnan(a.z);
-}
-
-__host__ __device__ inline void cnan(color3 &a)
-{
-    cnan(a.r);
-    cnan(a.g);
-    cnan(a.b);
-}

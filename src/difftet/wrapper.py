@@ -16,30 +16,25 @@ class Renderer(Function):
         indices: torch.Tensor,
         colors: torch.Tensor,
         opacities: torch.Tensor,
-        depths: torch.Tensor,
         width: int = 500,
         height: int = 500,
         tile_width: int = 16,
         tile_height: int = 16,
         early_stopping_threshold: float = 1 / 256,
-        activate_opacity: bool = False,
         record_timing: bool = False,
-        opaque: bool = False,
     ) -> torch.Tensor:
         N, _ = vertices.shape
-        check_tensor(vertices, "vertices", (N, 2))
+        check_tensor(vertices, "vertices", (N, 3))
         check_tensor(colors, "colors", (N, 3))
         check_tensor(opacities, "opacities", (N,))
         N, _ = indices.shape
         check_tensor(indices, "indices", (N, 3), torch.int32)
-        check_tensor(depths, "depths", (N,))
 
         ctx.width = width
         ctx.height = height
         ctx.tile_width = tile_width
         ctx.tile_height = tile_height
         ctx.early_stopping_threshold = early_stopping_threshold
-        ctx.activate_opacity = activate_opacity
         ctx.record_timing = record_timing
         if N < 1:
             ctx.skipped = True
@@ -53,15 +48,13 @@ class Renderer(Function):
                 indices,
                 colors,
                 opacities,
-                depths,
+                vertices[:, 2][indices].mean(dim=-1),  # depths
                 width,
                 height,
                 tile_width,
                 tile_height,
                 early_stopping_threshold,
-                activate_opacity,
                 not record_timing,
-                opaque,
             )
             ctx.save_for_backward(vertices, indices, colors, opacities, *args)
 
@@ -88,22 +81,19 @@ class Renderer(Function):
                 ctx.tile_width,
                 ctx.tile_height,
                 ctx.early_stopping_threshold,
-                ctx.activate_opacity,
             )
         return (
             grad_vertices,  # vertices
             None,  # indices
             grad_colors,  # colors
             grad_opacities,  # opacities
-            None,  # depths
+            # None,  # depths
             None,  # width
             None,  # height
             None,  # tile_width
             None,  # tile_height
             None,  # early_stopping_threshold
-            None,  # activate_opacity
             None,  # record_timing
-            None,  # opaque
         )
 
 
@@ -112,16 +102,20 @@ def render(
     indices: torch.Tensor,
     colors: torch.Tensor,
     opacities: torch.Tensor,
-    depths: torch.Tensor,
     width: int = 500,
     height: int = 500,
     tile_width=16,
     tile_height=16,
     early_stopping_threshold=1 / 256,
-    activate_opacity=False,
     record_timing=False,
-    opaque=False,
 ) -> torch.Tensor:
+    """
+    vertices : (N, 3) tensor of triangle vertices
+    indices : (M, 3) tensor of triangle vertex indices
+    colors : (N, 3) tensor of triangle vertex colors
+    opacities : (N,) tensor of triangle vertex opacities
+
+    """
     if tile_width * tile_height > 1024:
         raise ValueError("tile_width * tile_height must be <= 1024")
     return Renderer.apply(
@@ -129,13 +123,10 @@ def render(
         indices,
         colors,
         opacities,
-        depths,
         width,
         height,
         tile_width,
         tile_height,
         early_stopping_threshold,
-        activate_opacity,
         record_timing,
-        opaque,
     )

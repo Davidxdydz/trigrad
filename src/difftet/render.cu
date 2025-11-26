@@ -49,7 +49,7 @@ __device__ vec3 apply_cart_to_bary(const scalar *bary_matrices, vec2 p)
 
 __global__ void count_per_tile_kernel(
     int *__restrict__ counts,                                           // output: how many triangles are in each tile
-    const vec2 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
+    const vec3 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
     int triangle_count,                                                 // number of triangles
     int width, int height,                                              // image size
     int tile_width, int tile_height                                     // tile size
@@ -65,7 +65,7 @@ __global__ void count_per_tile_kernel(
     int tiles_x = (width + tile_width - 1) / tile_width;
     int tiles_y = (height + tile_height - 1) / tile_height;
     touched_tiles(
-        vertices[tri.a], vertices[tri.b], vertices[tri.c],
+        xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]),
         width, height, tile_width, tile_height, tiles_x, tiles_y, mins, maxs);
     // TODO explicitly check the triangles against each potential tile, atm all in AABB are counted
     if (mins.y == -1)
@@ -91,7 +91,7 @@ torch::Tensor count_per_tile(torch::Tensor vertices, torch::Tensor indices, int 
     int *counts_ptr = counts.mutable_data_ptr<int>();
     count_per_tile_kernel<<<blocks, threads_per_block>>>(
         counts_ptr,
-        const_vec2(vertices), const_id3(indices),
+        const_vec3(vertices), const_id3(indices),
         triangle_count,
         width, height,
         tile_width, tile_height);
@@ -101,7 +101,7 @@ torch::Tensor count_per_tile(torch::Tensor vertices, torch::Tensor indices, int 
 __global__ void fill_per_tile_lists_kernel(
     int *__restrict__ var_offsets,                                         // mutable data pointer to the offsets, this is used as an internal counter
     int *__restrict__ per_tile_list, scalar *__restrict__ per_tile_depths, // output: indices to triangles and depths per tile
-    const vec2 *__restrict__ vertices, const id3 *__restrict__ indices,    // vertices and indices of the triangles
+    const vec3 *__restrict__ vertices, const id3 *__restrict__ indices,    // vertices and indices of the triangles
     const scalar *__restrict__ depths,                                     // depth of the triangles
     int triangle_count,                                                    // number of triangles
     int width, int height,                                                 // image size
@@ -118,7 +118,7 @@ __global__ void fill_per_tile_lists_kernel(
     int tiles_x = (width + tile_width - 1) / tile_width;
     int tiles_y = (height + tile_height - 1) / tile_height;
     touched_tiles(
-        vertices[tri.a], vertices[tri.b], vertices[tri.c],
+        xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]),
         width, height, tile_width, tile_height, tiles_x, tiles_y, mins, maxs);
     if (mins.y == -1)
         return;
@@ -165,7 +165,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> per_tile_lists(torch::Te
     fill_per_tile_lists_kernel<<<blocks, threads_per_block>>>(
         mutable_int(var_offsets),
         mutable_int(per_tile_list), mutable_scalar(per_tile_depths),
-        const_vec2(vertices),
+        const_vec3(vertices),
         const_id3(indices), const_scalar(depths), triangle_count, width, height, tile_width, tile_height);
 
     return {per_tile_list, per_tile_depths, offsets};
@@ -177,8 +177,9 @@ __global__ void render_forward_kernel(
     const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle indices, colors and opacities
     const int *__restrict__ per_tile_list, const int *__restrict__ offsets,                                   // values from sorting
     int width, int height,
-    const scalar early_stopping_threshold,
-    const bool activate_opacity, bool opaque)
+    const scalar early_stopping_threshold
+
+)
 {
     int tile_index = blockIdx.y * gridDim.x + blockIdx.x;
     int ix = blockIdx.x * blockDim.x + threadIdx.x;
@@ -229,21 +230,15 @@ __global__ void render_forward_kernel(
         for (int k = 0; k < n_prefetch && j + k < end && !stopped; k++)
         {
             vec3 bary = apply_cart_to_bary(&bary_transforms_shared[k * 9], pos);
-            if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
+            if (bary.x < 0.0 || bary.y < 0.0 || bary.z < 0.0)
                 continue;
             if (bary.x == 0 && bary.y == 0 && bary.z == 0)
                 continue;
             scalar opacity = interpolate3(bary, opacities_shared[k * 3], opacities_shared[k * 3 + 1], opacities_shared[k * 3 + 2]);
-            scalar activated_opacity = opacity;
-            if (activate_opacity)
-            {
-                activated_opacity = 1 - safe_exp(-opacity);
-            }
-            if (opaque)
-                activated_opacity = 1.0f;
+            opacity = std::clamp(opacity, 0.0, max_opacity);
             color3 color = interpolate3(bary, colors_shared[k * 3], colors_shared[k * 3 + 1], colors_shared[k * 3 + 2]);
-            total_color = total_color + alpha * activated_opacity * color;
-            alpha *= (1 - activated_opacity);
+            total_color = total_color + alpha * opacity * color;
+            alpha *= (1 - opacity);
             end_out = j + k + 1;
             if (alpha < early_stopping_threshold)
                 stopped = true;
@@ -259,7 +254,7 @@ __global__ void render_forward_kernel(
 
 __global__ void cartesian_to_bary_kernel(
     scalar *__restrict__ output,                                        // output: barycentric transformation matrices nx3x3
-    const vec2 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
+    const vec3 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
     int num_triangles                                                   // number of triangles
 )
 {
@@ -267,9 +262,9 @@ __global__ void cartesian_to_bary_kernel(
     if (id >= num_triangles)
         return;
     id3 i = indices[id];
-    vec2 a = vertices[i.a];
-    vec2 b = vertices[i.b];
-    vec2 c = vertices[i.c];
+    vec2 a = xy(vertices[i.a]);
+    vec2 b = xy(vertices[i.b]);
+    vec2 c = xy(vertices[i.c]);
     int mid = id * 3 * 3;
     scalar denom = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
     if (denom == 0)
@@ -357,7 +352,7 @@ torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices)
     const dim3 blocks((triangle_count + threads_per_block.x - 1) / threads_per_block.x);
     cartesian_to_bary_kernel<<<blocks, threads_per_block>>>(
         mutable_scalar(output),
-        const_vec2(vertices),
+        const_vec3(vertices),
         const_id3(indices),
         triangle_count);
     return output;
@@ -409,7 +404,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     int width, int height,                       // image size
     const int tile_width, const int tile_height, // tile size
     const scalar early_stopping_threshold,       // remaining opacity at which to stop rendering
-    const bool activate_opacity, bool disable_timing, bool opaque)
+    bool disable_timing)
 {
     std::map<std::string, float> timings;
     CudaTimer timer(timings, disable_timing);
@@ -447,23 +442,20 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
         const_id3(indices), const_color3(colors), const_scalar(opacities),
         const_int(ids), const_int(offsets),
         width, height,
-        early_stopping_threshold,
-        activate_opacity,
-        opaque);
+        early_stopping_threshold);
     timer.stop();
     return {image, ids, offsets, bary_transforms, final_opacity, ends, timings};
 }
 
 __global__ void render_backward_kernel(
-    vec2 *__restrict__ grad_vertices, color3 *__restrict__ grad_colors, scalar *__restrict__ grad_opacities,                                     // output: gradients
+    vec3 *__restrict__ grad_vertices, color3 *__restrict__ grad_colors, scalar *__restrict__ grad_opacities,                                     // output: gradients
     const color3 *__restrict__ grad_output,                                                                                                      // upstream gradient
     const scalar *__restrict__ final_opacities, const int *__restrict__ ends,                                                                    // final opacities and indices
     const int *__restrict__ sorted_ids, const int *__restrict__ offsets,                                                                         // ids and offsets for sorted rendering
     const scalar *__restrict__ bary_transforms,                                                                                                  // cartesian to barycentric transformation matrices
-    const vec2 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle data
+    const vec3 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle data
     int width, int height,                                                                                                                       // image size
-    const scalar early_stopping_threshold,                                                                                                       // remaining opacity at which to stop rendering
-    const bool activate_opacity                                                                                                                  // whether to use opacity activation
+    const scalar early_stopping_threshold                                                                                                        // remaining opacity at which to stop rendering
 )
 {
     int tile_index = blockIdx.y * gridDim.x + blockIdx.x;
@@ -484,52 +476,30 @@ __global__ void render_backward_kernel(
         int id = sorted_ids[k];
         id3 i3 = indices[id];
         vec3 bary = apply_cart_to_bary(&bary_transforms[id * 9], {x, y});
-        if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
+        if (bary.x < 0.0 || bary.y < 0.0 || bary.z < 0.0)
             continue;
         if (bary.x == 0 && bary.y == 0 && bary.z == 0)
             continue;
         scalar opacity = interpolate3(bary, opacities[i3.a], opacities[i3.b], opacities[i3.c]);
-        scalar activated_opacity = opacity;
         scalar dao_do = 1;
-        if (activate_opacity)
-        {
-            scalar exp_opacity = safe_exp(-opacity);
-            activated_opacity = 1 - exp_opacity;
-            dao_do = exp_opacity;
-        }
-        if (activated_opacity > 0.99)
-            activated_opacity = 0.99;
+        opacity = std::clamp(opacity, 0.0, max_opacity);
 
         color3 color = interpolate3(bary, colors[i3.a], colors[i3.b], colors[i3.c]);
         // opacity gradient
         color3 drgb_dao;
-        if (1 - activated_opacity == 0)
-        {
-            // TODO: handle this case properly
-            drgb_dao = {0, 0, 0}; // (color * alpha - s) * grad_output[index];
-        }
-        else
-        {
-            drgb_dao = (color * alpha - s) / (1 - activated_opacity) * grad_output[index];
-        }
+        drgb_dao = (color * alpha - s) / (1 - opacity) * grad_output[index];
         scalar grad_opacity = component_sum(drgb_dao) * dao_do;
-        if (activated_opacity != 1)
-        {
-            atomicAdd(&grad_opacities[i3.a], grad_opacity * bary.x);
-            atomicAdd(&grad_opacities[i3.b], grad_opacity * bary.y);
-            atomicAdd(&grad_opacities[i3.c], grad_opacity * bary.z);
-        }
-        else
-        {
-            grad_opacity = 0;
-        }
-        alpha /= (1.0f - activated_opacity);
-        if (activated_opacity == 1.0f)
-            alpha = 1;
-        s += color * activated_opacity * alpha;
+
+        atomicAdd(&grad_opacities[i3.a], grad_opacity * bary.x);
+        atomicAdd(&grad_opacities[i3.b], grad_opacity * bary.y);
+        atomicAdd(&grad_opacities[i3.c], grad_opacity * bary.z);
+
+        alpha /= (1.0 - opacity);
+
+        s += color * opacity * alpha;
 
         // color gradient
-        color3 grad_color = alpha * activated_opacity * grad_output[index];
+        color3 grad_color = alpha * opacity * grad_output[index];
         // r
         atomicAdd(&grad_colors[i3.a].r, grad_color.r * bary.x);
         atomicAdd(&grad_colors[i3.b].r, grad_color.r * bary.y);
@@ -548,7 +518,7 @@ __global__ void render_backward_kernel(
         bary_derivatives(
             dp_da, dp_db, dp_dc,
             x, y,
-            vertices[i3.a], vertices[i3.b], vertices[i3.c],
+            xy(vertices[i3.a]), xy(vertices[i3.b]), xy(vertices[i3.c]),
             grad_color,
             colors[i3.a], colors[i3.b], colors[i3.c],
             grad_opacity,
@@ -571,8 +541,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     torch::Tensor final_opacities, torch::Tensor ends,                                            // final opacities and indices
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
-    const scalar early_stopping_threshold,                                                        // remaining opacity at which to stop rendering
-    const bool activate_opacity)
+    const scalar early_stopping_threshold                                                         // remaining opacity at which to stop rendering
+)
 {
     colors = colors.contiguous();
     vertices = vertices.contiguous();
@@ -584,14 +554,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     const dim3 threads_per_block(tile_width, tile_height);
     const dim3 blocks((width + threads_per_block.x - 1) / threads_per_block.x, (height + threads_per_block.y - 1) / threads_per_block.y);
     render_backward_kernel<<<blocks, threads_per_block>>>(
-        mutable_vec2(grad_vertices), mutable_color3(grad_colors), mutable_scalar(grad_opacities),
+        mutable_vec3(grad_vertices), mutable_color3(grad_colors), mutable_scalar(grad_opacities),
         const_color3(grad_output),
         const_scalar(final_opacities), const_int(ends),
         const_int(sorted_ids), const_int(offsets),
         const_scalar(bary_transforms),
-        const_vec2(vertices), const_id3(indices), const_color3(colors), const_scalar(opacities),
+        const_vec3(vertices), const_id3(indices), const_color3(colors), const_scalar(opacities),
         width, height,
-        early_stopping_threshold,
-        activate_opacity);
+        early_stopping_threshold);
     return {grad_vertices, grad_colors, grad_opacities};
 }

@@ -138,66 +138,62 @@ check_tensor = create_check("cpu")
 #     return Dist.apply(p0, p1)
 
 
-# class Interpolate3Scalar(Function):
-#     @staticmethod
-#     def forward(
-#         ctx: FunctionCtx,
-#         bary: torch.Tensor,
-#         a: torch.Tensor,
-#         b: torch.Tensor,
-#         c: torch.Tensor,
-#         w: torch.Tensor,
-#     ):
-#         check_tensor(bary, "bary", 3)
-#         check_tensor(a, "a", 1)
-#         check_tensor(b, "b", 1)
-#         check_tensor(c, "c", 1)
-#         check_tensor(w, "w", 3)
+class Interpolate3Scalar(Function):
+    @staticmethod
+    def forward(
+        ctx: FunctionCtx,
+        bary: torch.Tensor,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        c: torch.Tensor,
+        w: torch.Tensor,
+    ):
+        check_tensor(bary, "bary", 3)
+        check_tensor(a, "a", 1)
+        check_tensor(b, "b", 1)
+        check_tensor(c, "c", 1)
+        check_tensor(w, "w", 3)
 
-#         ctx.save_for_backward(bary, a, b, c, w)
-#         return _C.interpolate3_scalar(bary, a, b, c, w)
+        ctx.save_for_backward(bary, a, b, c, w)
+        return _C.interpolate3_scalar_torch(bary, a, b, c, w)
 
-#     @staticmethod
-#     def backward(ctx: FunctionCtx, grad_out: torch.Tensor):
-#         grad_bary, grad_a, grad_b, grad_c, grad_w = _C.interpolate3_scalar_backward(
-#             grad_out, *ctx.saved_tensors
-#         )
-#         return grad_bary, grad_a, grad_b, grad_c, grad_w
+    @staticmethod
+    def backward(ctx: FunctionCtx, grad_out: torch.Tensor):
+        grad_bary, grad_a, grad_b, grad_c, grad_w = _C.interpolate3_scalar_backward_torch(grad_out, *ctx.saved_tensors)
+        return grad_bary, grad_a, grad_b, grad_c, grad_w
 
 
-# def interpolate3_scalar(bary, a, b, c, w):
-#     return Interpolate3Scalar.apply(bary, a, b, c, w)
+def interpolate3_scalar(bary, a, b, c, w):
+    return Interpolate3Scalar.apply(bary, a, b, c, w)
 
 
-# class Interpolate3Vector(Function):
-#     @staticmethod
-#     def forward(
-#         ctx: FunctionCtx,
-#         bary: torch.Tensor,
-#         a: torch.Tensor,
-#         b: torch.Tensor,
-#         c: torch.Tensor,
-#         w: torch.Tensor,
-#     ):
-#         check_tensor(bary, "bary", 3)
-#         check_tensor(a, "a", 3)
-#         check_tensor(b, "b", 3)
-#         check_tensor(c, "c", 3)
-#         check_tensor(w, "w", 3)
+class Interpolate3Vector(Function):
+    @staticmethod
+    def forward(
+        ctx: FunctionCtx,
+        bary: torch.Tensor,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        c: torch.Tensor,
+        w: torch.Tensor,
+    ):
+        check_tensor(bary, "bary", 3)
+        check_tensor(a, "a", 3)
+        check_tensor(b, "b", 3)
+        check_tensor(c, "c", 3)
+        check_tensor(w, "w", 3)
 
-#         ctx.save_for_backward(bary, a, b, c, w)
-#         return _C.interpolate3_vector(bary, a, b, c, w)
+        ctx.save_for_backward(bary, a, b, c, w)
+        return _C.interpolate3_vector_torch(bary, a, b, c, w)
 
-#     @staticmethod
-#     def backward(ctx: FunctionCtx, grad_out: torch.Tensor):
-#         grad_bary, grad_a, grad_b, grad_c, grad_w = _C.interpolate3_vector_backward(
-#             grad_out, *ctx.saved_tensors
-#         )
-#         return grad_bary, grad_a, grad_b, grad_c, grad_w
+    @staticmethod
+    def backward(ctx: FunctionCtx, grad_out: torch.Tensor):
+        grad_bary, grad_a, grad_b, grad_c, grad_w = _C.interpolate3_vector_backward_torch(grad_out, *ctx.saved_tensors)
+        return grad_bary, grad_a, grad_b, grad_c, grad_w
 
 
-# def interpolate3_vector(bary, a, b, c, w):
-#     return Interpolate3Vector.apply(bary, a, b, c, w)
+def interpolate3_vector(bary, a, b, c, w):
+    return Interpolate3Vector.apply(bary, a, b, c, w)
 
 
 # class LerpScalar(Function):

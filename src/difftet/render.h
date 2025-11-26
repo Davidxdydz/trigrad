@@ -11,8 +11,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     torch::Tensor final_opacities, torch::Tensor ends,                                            // final opacities and indices
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
-    const scalar early_stopping_threshold,                                                        // remaining opacity at which to stop rendering
-    const bool activate_opacity);
+    const scalar early_stopping_threshold                                                         // remaining opacity at which to stop rendering
+);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::map<std::string, float>> render_forward(
     torch::Tensor vertices, torch::Tensor indices, torch::Tensor colors, torch::Tensor opacities, // input: vertices, indices, colors and opacities
@@ -20,6 +20,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     int width, int height,                       // image size
     const int tile_width, const int tile_height, // tile size
     const scalar early_stopping_threshold,       // remaining opacity at which to stop rendering
-    const bool activate_opacity, bool disable_timing, bool opaque);
+    bool disable_timing);
 
 torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices);

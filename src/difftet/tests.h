@@ -20,11 +20,11 @@
 // torch::Tensor dist_torch(torch::Tensor p0, torch::Tensor p1);
 // std::tuple<torch::Tensor, torch::Tensor> dist_backward_torch(torch::Tensor d_dd, torch::Tensor p0, torch::Tensor p1);
 
-// torch::Tensor interpolate3_scalar_torch(torch::Tensor bary, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor w);
-// std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> interpolate3_scalar_backward_torch(torch::Tensor d_dinter, torch::Tensor bary, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor w);
+torch::Tensor interpolate3_scalar_torch(torch::Tensor bary, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor w);
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> interpolate3_scalar_backward_torch(torch::Tensor d_dinter, torch::Tensor bary, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor w);
 
-// torch::Tensor interpolate3_vector_torch(torch::Tensor bary, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor w);
-// std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> interpolate3_vector_backward_torch(torch::Tensor d_dinter, torch::Tensor bary, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor w);
+torch::Tensor interpolate3_vector_torch(torch::Tensor bary, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor w);
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> interpolate3_vector_backward_torch(torch::Tensor d_dinter, torch::Tensor bary, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor w);
 
 // torch::Tensor lerp_scalar_torch(torch::Tensor a, torch::Tensor b, torch::Tensor t, torch::Tensor w);
 // std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> lerp_scalar_backward_torch(torch::Tensor d_dlerp, torch::Tensor a, torch::Tensor b, torch::Tensor t, torch::Tensor w);
