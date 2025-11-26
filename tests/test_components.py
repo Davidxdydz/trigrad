@@ -38,3 +38,9 @@ def test_interpolate3_vector(bary, vectors, weights):
     bary.requires_grad_()
     a, b, c = vectors
     assert gradcheck(difftet.interpolate3_vector, (bary, a, b, c, weights))
+
+
+@mark.parametrize("points", [uniforms(2, 4) for _ in range(100)])
+def test_barycentric(points):
+    p0, p1, q0, q1 = points
+    assert gradcheck(difftet.barycentric, (p0, p1, q0, q1))

@@ -8,10 +8,9 @@ setup(
         CUDAExtension(
             name="difftet._C",
             sources=[
-                "difftet/util.cpp",
                 "difftet/render.cu",
-                "difftet/module.cpp",
-                # "difftet/decompose.cu",
+                "difftet/module.cu",
+                "difftet/util.cu",
                 "difftet/tests.cu",
             ],
         ),

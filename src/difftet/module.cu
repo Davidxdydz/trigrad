@@ -12,4 +12,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("interpolate3_scalar_backward_torch", &interpolate3_scalar_backward_torch);
     m.def("interpolate3_vector_torch", &interpolate3_vector_torch);
     m.def("interpolate3_vector_backward_torch", &interpolate3_vector_backward_torch);
+    m.def("barycentric_torch", &barycentric_torch);
+    m.def("barycentric_backward_torch", &barycentric_backward_torch);
 }

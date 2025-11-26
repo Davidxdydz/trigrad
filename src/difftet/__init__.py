@@ -3,7 +3,7 @@ from .wrapper import render  # , decompose
 from .tests_wrapper import (
     #     intersection,
     #     project,
-    #     bary,
+    barycentric,
     #     compute_color,
     #     compute_opacity,
     #     dist,
@@ -19,7 +19,7 @@ __all__ = [
     # "decompose",
     # "intersection",
     # "project",
-    # "bary",
+    "barycentric",
     # "compute_color",
     # "compute_opacity",
     # "dist",

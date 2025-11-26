@@ -330,7 +330,7 @@ __device__ inline vec4 to4(const vec2 &a, scalar z = 0.0, scalar w = 0.0)
     return {a.x, a.y, z, w};
 }
 
-__host__ __device__ inline vec3 bary(vec2 v0, vec2 v1, vec2 v2, vec2 p)
+__host__ __device__ inline vec3 barycentric(vec2 v0, vec2 v1, vec2 v2, vec2 p)
 {
 
     scalar T = cross2d(v1 - v0, v2 - v0);
@@ -341,7 +341,7 @@ __host__ __device__ inline vec3 bary(vec2 v0, vec2 v1, vec2 v2, vec2 p)
     return {a, b, c};
 }
 
-__host__ __device__ inline std::tuple<vec2, vec2, vec2, vec2> bary_backward(vec3 d_db, vec2 a, vec2 b, vec2 c, vec2 p)
+__host__ __device__ inline std::tuple<vec2, vec2, vec2, vec2> barycentric_backward(vec3 d_db, vec2 a, vec2 b, vec2 c, vec2 p)
 {
 
     vec2 dbx_da, dby_da, dbz_da; // d bary_0 / d a, d bary_1 / d a, d bary_2 / d a
@@ -349,7 +349,7 @@ __host__ __device__ inline std::tuple<vec2, vec2, vec2, vec2> bary_backward(vec3
     vec2 dbx_dc, dby_dc, dbz_dc; // d bary_0 / d c, d bary_1 / d c, d bary_2 / d c
     vec2 dbx_dp, dby_dp, dbz_dp; // d bary_0 / d p, d bary_1 / d p, d bary_2 / d p
 
-    vec3 l = bary(a, b, c, p);
+    vec3 l = barycentric(a, b, c, p);
 
     scalar d = a.x * (b.y - c.y) + b.x * (-a.y + c.y) + c.x * (a.y - b.y);
     dbx_da.x = l.x * (-b.y + c.y) / d;
@@ -567,6 +567,19 @@ __device__ inline id2 select(const id4 &from, const id2 &ids)
     return {from_ids[ids.a], from_ids[ids.b]};
 }
 
+__device__ inline void atomicAdd3(vec3 *address, vec3 value)
+{
+    atomicAdd(&address->x, value.x);
+    atomicAdd(&address->y, value.y);
+    atomicAdd(&address->z, value.z);
+}
+
+__device__ inline void atomicAdd3(color3 *address, color3 value)
+{
+    atomicAdd(&address->r, value.r);
+    atomicAdd(&address->g, value.g);
+    atomicAdd(&address->b, value.b);
+}
 const vec3 *const_vec3(torch::Tensor tensor);
 const vec2 *const_vec2(torch::Tensor tensor);
 vec2 *mutable_vec2(torch::Tensor tensor);

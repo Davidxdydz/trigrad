@@ -49,27 +49,25 @@ check_tensor = create_check("cpu")
 #     return Project.apply(v, projection_matrix)
 
 
-# class Bary(Function):
-#     @staticmethod
-#     def forward(ctx: FunctionCtx, p0, p1, q0, q1):
-#         check_tensor(p0, "p0", 2)
-#         check_tensor(p1, "p1", 2)
-#         check_tensor(q0, "q0", 2)
-#         check_tensor(q1, "q1", 2)
+class Barycentric(Function):
+    @staticmethod
+    def forward(ctx: FunctionCtx, p0, p1, q0, q1):
+        check_tensor(p0, "p0", 2)
+        check_tensor(p1, "p1", 2)
+        check_tensor(q0, "q0", 2)
+        check_tensor(q1, "q1", 2)
 
-#         ctx.save_for_backward(p0, p1, q0, q1)
-#         return _C.bary(p0, p1, q0, q1)
+        ctx.save_for_backward(p0, p1, q0, q1)
+        return _C.barycentric_torch(p0, p1, q0, q1)
 
-#     @staticmethod
-#     def backward(ctx: FunctionCtx, grad_bary: torch.Tensor):
-#         grad_p0, grad_p1, grad_q0, grad_q1 = _C.bary_backward(
-#             grad_bary, *ctx.saved_tensors
-#         )
-#         return grad_p0, grad_p1, grad_q0, grad_q1
+    @staticmethod
+    def backward(ctx: FunctionCtx, grad_bary: torch.Tensor):
+        grad_p0, grad_p1, grad_q0, grad_q1 = _C.barycentric_backward_torch(grad_bary, *ctx.saved_tensors)
+        return grad_p0, grad_p1, grad_q0, grad_q1
 
 
-# def bary(p0, p1, q0, q1):
-#     return Bary.apply(p0, p1, q0, q1)
+def barycentric(p0, p1, q0, q1):
+    return Barycentric.apply(p0, p1, q0, q1)
 
 
 # class ComputeColor(Function):

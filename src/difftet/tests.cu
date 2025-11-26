@@ -1,8 +1,6 @@
 #include "tests.h"
 #include "util.h"
 
-constexpr auto device = torch::kCUDA;
-
 vec2 to_vec2(torch::Tensor tensor)
 {
     return {tensor[0].item<scalar>(), tensor[1].item<scalar>()};
@@ -42,15 +40,15 @@ torch::Tensor to_tensor(scalar d)
     return torch::tensor({d}, torch::dtype(torchscalar));
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> bary_backward_torch(torch::Tensor d_db, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor p)
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> barycentric_backward_torch(torch::Tensor d_db, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor p)
 {
-    auto [da, db, dc, dp] = bary_backward(to_vec3(d_db), to_vec2(a), to_vec2(b), to_vec2(c), to_vec2(p));
+    auto [da, db, dc, dp] = barycentric_backward(to_vec3(d_db), to_vec2(a), to_vec2(b), to_vec2(c), to_vec2(p));
     return {to_tensor(da), to_tensor(db), to_tensor(dc), to_tensor(dp)};
 }
 
-torch::Tensor bary_torch(torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor p)
+torch::Tensor barycentric_torch(torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor p)
 {
-    auto result = bary(to_vec2(a), to_vec2(b), to_vec2(c), to_vec2(p));
+    auto result = barycentric(to_vec2(a), to_vec2(b), to_vec2(c), to_vec2(p));
     return to_tensor(result);
 }
 

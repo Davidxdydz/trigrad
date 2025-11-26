@@ -281,51 +281,6 @@ __global__ void cartesian_to_bary_kernel(
     output[mid + 8] = (a.x * b.y - b.x * a.y) / denom;
 }
 
-__device__ void bary_derivatives(
-    vec2 &dp_da, vec2 &dp_db, vec2 &dp_dc, // output : d pixel / d (vertex(-position) a, b, c)
-    scalar x, scalar y,                    // pixel coordinates
-    vec2 va, vec2 vb, vec2 vc,             // vertex positions in screen space [0,1]²
-    vec3 grad_bary,                        // d pixel / d barycentric coordinates
-    vec3 l                                 // barycentric coordinates
-)
-{
-    // TODO stick to a naming convention, god damn
-    // xyz for vertex 0 1 2? or 0 1 2? or a b c?
-
-    vec2 dba_dva, dbb_dva, dbc_dva; // d bary_0 / d a, d bary_1 / d a, d bary_2 / d a
-    vec2 dba_dvb, dbb_dvb, dbc_dvb; // d bary_0 / d b, d bary_1 / d b, d bary_2 / d b
-    vec2 dba_dvc, dbb_dvc, dbc_dvc; // d bary_0 / d c, d bary_1 / d c, d bary_2 / d c
-
-    scalar d = va.x * (vb.y - vc.y) + vb.x * (-va.y + vc.y) + vc.x * (va.y - vb.y);
-    if (d == 0)
-        d = 1;
-
-    dba_dva.x = l.x * (-vb.y + vc.y) / d;
-    dbb_dva.x = (-vc.y - l.y * (vb.y - vc.y) + y) / d;
-    dbc_dva.x = (vb.y - l.z * (vb.y - vc.y) - y) / d;
-    dba_dva.y = l.x * (vb.x - vc.x) / d;
-    dbb_dva.y = (vc.x + l.y * (vb.x - vc.x) - x) / d;
-    dbc_dva.y = (-vb.x + l.z * (vb.x - vc.x) + x) / d;
-    dba_dvb.x = (vc.y + l.x * (va.y - vc.y) - y) / d;
-    dbb_dvb.x = l.y * (va.y - vc.y) / d;
-    dbc_dvb.x = (-va.y + l.z * (va.y - vc.y) + y) / d;
-    dba_dvb.y = (-vc.x - l.x * (va.x - vc.x) + x) / d;
-    dbb_dvb.y = l.y * (-va.x + vc.x) / d;
-    dbc_dvb.y = (va.x - l.z * (va.x - vc.x) - x) / d;
-    dba_dvc.x = (-vb.y - l.x * (va.y - vb.y) + y) / d;
-    dbb_dvc.x = (va.y - l.y * (va.y - vb.y) - y) / d;
-    dbc_dvc.x = l.z * (-va.y + vb.y) / d;
-    dba_dvc.y = (vb.x + l.x * (va.x - vb.x) - x) / d;
-    dbb_dvc.y = (-va.x + l.y * (va.x - vb.x) + x) / d;
-    dbc_dvc.y = l.z * (va.x - vb.x) / d;
-
-    dp_da.x = grad_bary.x * dba_dva.x + grad_bary.y * dbb_dva.x + grad_bary.z * dbc_dva.x;
-    dp_da.y = grad_bary.x * dba_dva.y + grad_bary.y * dbb_dva.y + grad_bary.z * dbc_dva.y;
-    dp_db.x = grad_bary.x * dba_dvb.x + grad_bary.y * dbb_dvb.x + grad_bary.z * dbc_dvb.x;
-    dp_db.y = grad_bary.x * dba_dvb.y + grad_bary.y * dbb_dvb.y + grad_bary.z * dbc_dvb.y;
-    dp_dc.x = grad_bary.x * dba_dvc.x + grad_bary.y * dbb_dvc.x + grad_bary.z * dbc_dvc.x;
-    dp_dc.y = grad_bary.x * dba_dvc.y + grad_bary.y * dbb_dvc.y + grad_bary.z * dbc_dvc.y;
-}
 torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices)
 {
     int triangle_count = indices.size(0);
@@ -469,48 +424,38 @@ __global__ void render_backward_kernel(
 
         color3 color = interpolate3(bary, colors[i3.a], colors[i3.b], colors[i3.c]);
         // opacity gradient
-        color3 drgb_dao = (color * alpha - s) / (1 - opacity) * grad_output[index];
-        scalar grad_opacity = component_sum(drgb_dao);
+        scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);
 
-        auto [grad_bary_opacity, grad_bary_o1, grad_bary_o2, grad_bary_o3, grad_bary_w] = interpolate3_backward(grad_opacity, bary, opacities[i3.a], opacities[i3.b], opacities[i3.c], {1, 1, 1});
-        atomicAdd(&grad_opacities[i3.a], grad_bary_o1);
-        atomicAdd(&grad_opacities[i3.b], grad_bary_o2);
-        atomicAdd(&grad_opacities[i3.c], grad_bary_o3);
+        auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] = interpolate3_backward(d_do, bary, opacities[i3.a], opacities[i3.b], opacities[i3.c], {1, 1, 1});
+        atomicAdd(&grad_opacities[i3.a], d_do1);
+        atomicAdd(&grad_opacities[i3.b], d_do2);
+        atomicAdd(&grad_opacities[i3.c], d_do3);
 
         alpha /= (1.0 - opacity);
 
         s += color * opacity * alpha;
 
         // color gradient
-        color3 grad_color = alpha * opacity * grad_output[index];
-        auto [grad_bary_color, grad_bary_c1, grad_bary_c2, grad_bary_c3, grad_bary_w2] = interpolate3_backward(grad_color, bary, colors[i3.a], colors[i3.b], colors[i3.c], {1, 1, 1});
+        color3 d_rgb_dc = alpha * opacity * grad_output[index];
+        auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] = interpolate3_backward(d_rgb_dc, bary, colors[i3.a], colors[i3.b], colors[i3.c], {1, 1, 1});
 
-        // r
-        atomicAdd(&grad_colors[i3.a].r, grad_bary_c1.x);
-        atomicAdd(&grad_colors[i3.b].r, grad_bary_c2.x);
-        atomicAdd(&grad_colors[i3.c].r, grad_bary_c3.x);
-        // g
-        atomicAdd(&grad_colors[i3.a].g, grad_bary_c1.y);
-        atomicAdd(&grad_colors[i3.b].g, grad_bary_c2.y);
-        atomicAdd(&grad_colors[i3.c].g, grad_bary_c3.y);
-        // b
-        atomicAdd(&grad_colors[i3.a].b, grad_bary_c1.z);
-        atomicAdd(&grad_colors[i3.b].b, grad_bary_c2.z);
-        atomicAdd(&grad_colors[i3.c].b, grad_bary_c3.z);
+        atomicAdd3(&grad_colors[i3.a], drgb_dc1);
+        atomicAdd3(&grad_colors[i3.b], drgb_dc2);
+        atomicAdd3(&grad_colors[i3.c], drgb_dc3);
+
         // vertex gradient
-        vec2 dp_da, dp_db, dp_dc;
-        bary_derivatives(
-            dp_da, dp_db, dp_dc,
-            x, y,
+        vec3 d_dbary = d_do_do_dbary + drgb_dc_dc_dbary;
+        auto [d_dvaxy, d_dvbxy, d_dvcxy, d_dp] = barycentric_backward(
+            d_dbary,
             xy(vertices[i3.a]), xy(vertices[i3.b]), xy(vertices[i3.c]),
-            grad_bary_opacity + grad_bary_color,
-            bary);
-        atomicAdd(&grad_vertices[i3.a].x, dp_da.x);
-        atomicAdd(&grad_vertices[i3.a].y, dp_da.y);
-        atomicAdd(&grad_vertices[i3.b].x, dp_db.x);
-        atomicAdd(&grad_vertices[i3.b].y, dp_db.y);
-        atomicAdd(&grad_vertices[i3.c].x, dp_dc.x);
-        atomicAdd(&grad_vertices[i3.c].y, dp_dc.y);
+            {x, y});
+        vec3 d_dva = {d_dvaxy.x, d_dvaxy.y, 0};
+        vec3 d_dvb = {d_dvbxy.x, d_dvbxy.y, 0};
+        vec3 d_dvc = {d_dvcxy.x, d_dvcxy.y, 0};
+
+        atomicAdd3(&grad_vertices[i3.a], d_dva);
+        atomicAdd3(&grad_vertices[i3.b], d_dvb);
+        atomicAdd3(&grad_vertices[i3.c], d_dvc);
     }
 }
 

@@ -8,8 +8,8 @@
 // torch::Tensor project_torch(torch::Tensor v, torch::Tensor projection_matrix);
 // torch::Tensor project_backward_torch(torch::Tensor d_dpersp, torch::Tensor v, torch::Tensor projection_matrix);
 
-// torch::Tensor bary_torch(torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor p);
-// std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> bary_backward_torch(torch::Tensor d_db, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor p);
+torch::Tensor barycentric_torch(torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor p);
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> barycentric_backward_torch(torch::Tensor d_db, torch::Tensor a, torch::Tensor b, torch::Tensor c, torch::Tensor p);
 
 // torch::Tensor compute_color_torch(torch::Tensor o0, torch::Tensor o1, torch::Tensor c0, torch::Tensor c1, torch::Tensor d);
 // std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> compute_color_backward_torch(torch::Tensor d_dcolor, torch::Tensor o0, torch::Tensor o1, torch::Tensor c0, torch::Tensor c1, torch::Tensor d);
