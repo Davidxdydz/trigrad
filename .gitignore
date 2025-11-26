@@ -1,0 +1,7 @@
+src/build
+src/difftet.egg-info
+venv
+.vscode
+.pytest_cache
+.git
+**/__pycache__

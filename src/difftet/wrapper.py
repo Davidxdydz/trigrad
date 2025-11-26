@@ -1,0 +1,141 @@
+from typing import Tuple
+import torch
+from torch.autograd import Function
+from torch.autograd.function import FunctionCtx
+import difftet._C as _C
+from difftet.util import create_check
+
+check_tensor = create_check()
+
+
+class Renderer(Function):
+    @staticmethod
+    def forward(
+        ctx: FunctionCtx,
+        vertices: torch.Tensor,
+        indices: torch.Tensor,
+        colors: torch.Tensor,
+        opacities: torch.Tensor,
+        depths: torch.Tensor,
+        width: int = 500,
+        height: int = 500,
+        tile_width: int = 16,
+        tile_height: int = 16,
+        early_stopping_threshold: float = 1 / 256,
+        activate_opacity: bool = False,
+        record_timing: bool = False,
+        opaque: bool = False,
+    ) -> torch.Tensor:
+        N, _ = vertices.shape
+        check_tensor(vertices, "vertices", (N, 2))
+        check_tensor(colors, "colors", (N, 3))
+        check_tensor(opacities, "opacities", (N,))
+        N, _ = indices.shape
+        check_tensor(indices, "indices", (N, 3), torch.int32)
+        check_tensor(depths, "depths", (N,))
+
+        ctx.width = width
+        ctx.height = height
+        ctx.tile_width = tile_width
+        ctx.tile_height = tile_height
+        ctx.early_stopping_threshold = early_stopping_threshold
+        ctx.activate_opacity = activate_opacity
+        ctx.record_timing = record_timing
+        if N < 1:
+            ctx.skipped = True
+            image = torch.zeros((height, width, 3), dtype=colors.dtype, device=colors.device)
+            timings = None
+            ctx.save_for_backward(vertices, indices, colors, opacities)
+        else:
+            ctx.skipped = False
+            image, *args, timings = _C.render_forward(
+                vertices,
+                indices,
+                colors,
+                opacities,
+                depths,
+                width,
+                height,
+                tile_width,
+                tile_height,
+                early_stopping_threshold,
+                activate_opacity,
+                not record_timing,
+                opaque,
+            )
+            ctx.save_for_backward(vertices, indices, colors, opacities, *args)
+
+        if record_timing:
+            return image, timings
+        return image
+
+    @staticmethod
+    def backward(ctx: FunctionCtx, grad_output: torch.Tensor):
+        if ctx.record_timing:
+            grad_output, grad_timings = grad_output
+        else:
+            grad_output = grad_output[0]
+        if ctx.skipped:
+            grad_vertices = torch.zeros_like(ctx.saved_tensors[0])
+            grad_colors = torch.zeros_like(ctx.saved_tensors[2])
+            grad_opacities = torch.zeros_like(ctx.saved_tensors[3])
+        else:
+            grad_vertices, grad_colors, grad_opacities = _C.render_backward(
+                grad_output,
+                *ctx.saved_tensors,
+                ctx.width,
+                ctx.height,
+                ctx.tile_width,
+                ctx.tile_height,
+                ctx.early_stopping_threshold,
+                ctx.activate_opacity,
+            )
+        return (
+            grad_vertices,  # vertices
+            None,  # indices
+            grad_colors,  # colors
+            grad_opacities,  # opacities
+            None,  # depths
+            None,  # width
+            None,  # height
+            None,  # tile_width
+            None,  # tile_height
+            None,  # early_stopping_threshold
+            None,  # activate_opacity
+            None,  # record_timing
+            None,  # opaque
+        )
+
+
+def render(
+    vertices: torch.Tensor,
+    indices: torch.Tensor,
+    colors: torch.Tensor,
+    opacities: torch.Tensor,
+    depths: torch.Tensor,
+    width: int = 500,
+    height: int = 500,
+    tile_width=16,
+    tile_height=16,
+    early_stopping_threshold=1 / 256,
+    activate_opacity=False,
+    record_timing=False,
+    opaque=False,
+) -> torch.Tensor:
+    if tile_width * tile_height > 1024:
+        raise ValueError("tile_width * tile_height must be <= 1024")
+    return Renderer.apply(
+        vertices,
+        indices,
+        colors,
+        opacities,
+        depths,
+        width,
+        height,
+        tile_width,
+        tile_height,
+        early_stopping_threshold,
+        activate_opacity,
+        record_timing,
+        opaque,
+    )
