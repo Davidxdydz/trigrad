@@ -2,16 +2,16 @@ from setuptools import setup, find_packages
 from torch.utils.cpp_extension import CUDAExtension, BuildExtension
 
 setup(
-    name="difftet",
+    name="trigrad",
     packages=find_packages(),
     ext_modules=[
         CUDAExtension(
-            name="difftet._C",
+            name="trigrad._C",
             sources=[
-                "difftet/render.cu",
-                "difftet/module.cu",
-                "difftet/util.cu",
-                "difftet/tests.cu",
+                "trigrad/render.cu",
+                "trigrad/module.cu",
+                "trigrad/util.cu",
+                "trigrad/tests.cu",
             ],
         ),
     ],

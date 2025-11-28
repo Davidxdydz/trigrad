@@ -1,12 +1,12 @@
 from tests.testcases import overlapping_squares, large_trianlges
 import torch
 from torch.autograd import gradcheck
-import difftet
+import trigrad
 import pytest
 
 tile_size = 4
 torch.set_default_device("cuda")
-torch.set_default_dtype(difftet.precision)
+torch.set_default_dtype(trigrad.precision)
 
 
 def test_dc():
@@ -14,7 +14,7 @@ def test_dc():
     opacities = torch.full_like(vertices[:, 0], 0.99)
     colors.requires_grad_()
     assert gradcheck(
-        difftet.render,
+        trigrad.render,
         (
             vertices,
             indices,
@@ -34,7 +34,7 @@ def test_do():
     opacities = torch.full_like(vertices[:, 0], 0.99)
     opacities.requires_grad_()
     assert gradcheck(
-        difftet.render,
+        trigrad.render,
         (
             vertices,
             indices,
@@ -54,7 +54,7 @@ def test_dv():
     opacities = torch.full_like(vertices[:, 0], 0.99)
     vertices.requires_grad_()
     assert gradcheck(
-        difftet.render,
+        trigrad.render,
         (
             vertices,
             indices,
@@ -76,7 +76,7 @@ def test_dall():
     colors.requires_grad_()
     opacities.requires_grad_()
     assert gradcheck(
-        difftet.render,
+        trigrad.render,
         (
             vertices,
             indices,

@@ -1,5 +1,5 @@
 src/build
-src/difftet.egg-info
+src/trigrad.egg-info
 venv
 .vscode
 .pytest_cache

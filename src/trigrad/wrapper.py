@@ -3,7 +3,7 @@ import torch
 from torch.autograd import Function
 from torch.autograd.function import FunctionCtx
 import difftet._C as _C
-from difftet.util import create_check
+from trigrad.util import create_check
 
 check_tensor = create_check()
 
@@ -110,7 +110,7 @@ def render(
     record_timing=False,
 ) -> torch.Tensor:
     """
-    vertices : (N, 4) tensor of triangle vertices
+    vertices : (N, 4) tensor of triangle vertices (x'/w',y'/w',z'/w',1/w')
     indices : (M, 3) tensor of triangle vertex indices
     colors : (N, 3) tensor of triangle vertex colors
     opacities : (N,) tensor of triangle vertex opacities
