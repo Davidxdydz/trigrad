@@ -2,7 +2,7 @@ from typing import Tuple
 import torch
 from torch.autograd import Function
 from torch.autograd.function import FunctionCtx
-import difftet._C as _C
+import trigrad._C as _C
 from trigrad.util import create_check
 
 check_tensor = create_check()
