@@ -94,6 +94,19 @@ __host__ __device__ inline vec2 operator-(const vec2 &a)
 
     return {a.x, a.y};
 }
+
+__host__ __device__ inline vec2 operator+(const vec2 &a, const scalar &b)
+{
+
+    return {a.x + b, a.y + b};
+}
+
+__host__ __device__ inline vec2 operator/(const vec2 &a, const vec2 &b)
+{
+
+    return {a.x / b.x, a.y / b.y};
+}
+
 __host__ __device__ inline vec2 operator-(const vec2 &a, const vec2 &b)
 {
 
@@ -334,7 +347,6 @@ __host__ __device__ inline vec3 barycentric(vec2 v0, vec2 v1, vec2 v2, vec2 p)
 {
 
     scalar T = cross2d(v1 - v0, v2 - v0);
-
     scalar a = cross2d(v1 - p, v2 - p) / T;
     scalar b = cross2d(v2 - p, v0 - p) / T;
     scalar c = cross2d(v0 - p, v1 - p) / T;

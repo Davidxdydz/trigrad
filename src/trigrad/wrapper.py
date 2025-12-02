@@ -48,7 +48,6 @@ class Renderer(Function):
                 indices,
                 colors,
                 opacities,
-                vertices[:, 2][indices].mean(dim=-1),  # depths
                 width,
                 height,
                 tile_width,
@@ -66,8 +65,6 @@ class Renderer(Function):
     def backward(ctx: FunctionCtx, grad_output: torch.Tensor):
         if ctx.record_timing:
             grad_output, grad_timings = grad_output
-        else:
-            grad_output = grad_output[0]
         if ctx.skipped:
             grad_vertices = torch.zeros_like(ctx.saved_tensors[0])
             grad_colors = torch.zeros_like(ctx.saved_tensors[2])
@@ -87,7 +84,6 @@ class Renderer(Function):
             None,  # indices
             grad_colors,  # colors
             grad_opacities,  # opacities
-            # None,  # depths
             None,  # width
             None,  # height
             None,  # tile_width
@@ -108,9 +104,9 @@ def render(
     tile_height=16,
     early_stopping_threshold=1 / 256,
     record_timing=False,
-) -> torch.Tensor:
+) -> torch.Tensor | Tuple[torch.Tensor, dict]:
     """
-    vertices : (N, 4) tensor of triangle vertices (x'/w',y'/w',z'/w',1/w')
+    vertices : (N, 4) tensor of triangle vertices (x'/w',y'/w',z'/w',1/w') in [-1,1] clip space
     indices : (M, 3) tensor of triangle vertex indices
     colors : (N, 3) tensor of triangle vertex colors
     opacities : (N,) tensor of triangle vertex opacities
@@ -118,6 +114,8 @@ def render(
     """
     if tile_width * tile_height > 1024:
         raise ValueError("tile_width * tile_height must be <= 1024")
+    if tile_width * tile_height < 16:
+        raise ValueError("tile_width * tile_height must be >= 16, otherwise prefetching breaks")
     return Renderer.apply(
         vertices,
         indices,

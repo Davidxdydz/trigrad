@@ -28,8 +28,7 @@ def overlapping_squares(N, mins=0.1, maxs=0.9):
         colors.append(c)
         colors.append(c)
         colors.append(c)
-    vertices = torch.tensor(vertices)
-    vertices[:, :2] += 0.5
+    vertices = torch.tensor(vertices) * 2
     indices = torch.tensor(indices, dtype=torch.int32)
     colors = torch.tensor(colors)
     vertices = add_w(vertices)
@@ -96,7 +95,7 @@ def overlapping_triangles():
             [0, 0, 1],
         ],
     )
-    vertices = add_w(vertices)
+    vertices = add_w(vertices) * 2 - 1
     return vertices, indices, colors
 
 
@@ -122,11 +121,11 @@ def test_square():
             [1, 1, 1],
         ],
     )
-    vertices = add_w(vertices)
+    vertices = add_w(vertices) * 2 - 1
     return vertices, indices, colors
 
 
-def grid_mesh(nx, ny, minx=0, maxx=1, miny=0, maxy=1):
+def grid_mesh(nx, ny, minx=-1, maxx=1, miny=-1, maxy=1):
     vertices = []
     indices = []
     for iy in range(ny):
