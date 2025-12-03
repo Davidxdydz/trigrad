@@ -96,42 +96,136 @@ torch::Tensor count_per_tile(torch::Tensor vertices, torch::Tensor indices, int 
         tile_width, tile_height);
     return counts;
 }
+__device__ inline void compute_plane(const vec3 &a, const vec3 &b, const vec3 &c,
+                                     scalar &A, scalar &B, scalar &C)
+{
+    scalar det = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
+    scalar id = 1.0 / det;
+
+    A = (a.z * (b.y - c.y) + b.z * (c.y - a.y) + c.z * (a.y - b.y)) * id;
+    B = (a.x * (b.z - c.z) + b.x * (c.z - a.z) + c.x * (a.z - b.z)) * id;
+    C = (a.x * (b.y * c.z - c.y * b.z) +
+         b.x * (c.y * a.z - a.y * c.z) +
+         c.x * (a.y * b.z - b.y * a.z)) *
+        id;
+}
+
+__device__ inline scalar plane_depth(scalar A, scalar B, scalar C, const vec2 &p)
+{
+    return A * p.x + B * p.y + C;
+}
+
+__device__ inline int clip_polygon_to_halfspace(
+    const vec2 *in_p, int n_in, vec2 *out_p,
+    scalar nx, scalar ny, scalar d)
+{
+    int n_out = 0;
+
+    vec2 p0 = in_p[n_in - 1];
+    scalar d0 = nx * p0.x + ny * p0.y - d;
+    bool in0 = d0 >= 0;
+
+    for (int i = 0; i < n_in; i++)
+    {
+        vec2 p1 = in_p[i];
+        scalar d1 = nx * p1.x + ny * p1.y - d;
+        bool in1 = d1 >= 0;
+
+        if (in1 != in0)
+        {
+            scalar t = d0 / (d0 - d1);
+            out_p[n_out++] = {p0.x + t * (p1.x - p0.x),
+                              p0.y + t * (p1.y - p0.y)};
+        }
+        if (in1)
+            out_p[n_out++] = p1;
+
+        p0 = p1;
+        d0 = d1;
+        in0 = in1;
+    }
+    return n_out;
+}
+
+__device__ inline bool clip_rect(vec2 *poly, int &n, vec2 *buf,
+                                 scalar nx, scalar ny, scalar d)
+{
+    n = clip_polygon_to_halfspace(poly, n, buf, nx, ny, d);
+    if (n <= 0)
+        return false;
+    for (int i = 0; i < n; i++)
+        poly[i] = buf[i];
+    return true;
+}
 
 __global__ void fill_per_tile_lists_kernel(
-    int *__restrict__ var_offsets,                                         // mutable data pointer to the offsets, this is used as an internal counter
-    int *__restrict__ per_tile_list, scalar *__restrict__ per_tile_depths, // output: indices to triangles and depths per tile
-    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices,    // vertices and indices of the triangles
-    int triangle_count,                                                    // number of triangles
-    int width, int height,                                                 // image size
-    const int tile_width, const int tile_height                            // tile size
-)
+    int *__restrict__ var_offsets,
+    int *__restrict__ per_tile_list,
+    scalar *__restrict__ per_tile_depths,
+    const vec4 *__restrict__ vertices,
+    const id3 *__restrict__ indices,
+    int tri_count,
+    int width, int height,
+    const int tw, const int th)
 {
-    int2 mins, maxs;
-    int id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (id >= triangle_count)
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= tri_count)
         return;
 
-    id3 tri = indices[id];
-    int tiles_x = (width + tile_width - 1) / tile_width;
-    int tiles_y = (height + tile_height - 1) / tile_height;
-    vec4 va = vertices[tri.a];
-    vec4 vb = vertices[tri.b];
-    vec4 vc = vertices[tri.c];
-    touched_tiles(
-        xy(va), xy(vb), xy(vc),
-        width, height, tile_width, tile_height, tiles_x, tiles_y, mins, maxs);
+    id3 tri = indices[tid];
+    int tiles_x = (width + tw - 1) / tw;
+    int tiles_y = (height + th - 1) / th;
+
+    vec3 a = {vertices[tri.a].x, vertices[tri.a].y, vertices[tri.a].z};
+    vec3 b = {vertices[tri.b].x, vertices[tri.b].y, vertices[tri.b].z};
+    vec3 c = {vertices[tri.c].x, vertices[tri.c].y, vertices[tri.c].z};
+
+    int2 mins, maxs;
+    touched_tiles(xy(a), xy(b), xy(c),
+                  width, height, tw, th,
+                  tiles_x, tiles_y,
+                  mins, maxs);
     if (mins.y == -1)
         return;
-    for (int i = mins.x; i <= maxs.x; i++)
-    {
-        for (int j = mins.y; j <= maxs.y; j++)
+
+    scalar A, B, Cc;
+    compute_plane(a, b, c, A, B, Cc);
+
+    for (int tx = mins.x; tx <= maxs.x; tx++)
+        for (int ty = mins.y; ty <= maxs.y; ty++)
         {
-            int index = j * tiles_x + i;
-            int my_index = atomicAdd(&var_offsets[index], 1);
-            per_tile_list[my_index] = id;
-            per_tile_depths[my_index] = (va.z + vb.z + vc.z) / 3.0;
+            int tile_i = ty * tiles_x + tx;
+            int out_i = atomicAdd(&var_offsets[tile_i], 1);
+
+            per_tile_list[out_i] = tid;
+
+            scalar xmin = (scalar)(tx * tw) / width * 2 - 1;
+            scalar xmax = (scalar)((tx + 1) * tw) / width * 2 - 1;
+            scalar ymin = (scalar)(ty * th) / height * 2 - 1;
+            scalar ymax = (scalar)((ty + 1) * th) / height * 2 - 1;
+
+            vec2 poly[7], buf[7];
+            int n = 3;
+            poly[0] = xy(a);
+            poly[1] = xy(b);
+            poly[2] = xy(c);
+
+            if (!clip_rect(poly, n, buf, +1, 0, xmin) ||
+                !clip_rect(poly, n, buf, -1, 0, -xmax) ||
+                !clip_rect(poly, n, buf, 0, +1, ymin) ||
+                !clip_rect(poly, n, buf, 0, -1, -ymax))
+            {
+                per_tile_depths[out_i] = 1e30;
+                continue;
+            }
+
+            scalar md = 1e30f;
+#pragma unroll
+            for (int i = 0; i < n; i++)
+                md = fmin(md, plane_depth(A, B, Cc, poly[i]));
+
+            per_tile_depths[out_i] = md;
         }
-    }
 }
 
 void sort_depth_ranges(
@@ -196,57 +290,27 @@ __global__ void render_forward_kernel(
     int start = offsets[tile_index];
     int end = offsets[tile_index + 1];
     vec2 pos = {((scalar)ix + 0.5) / (scalar)width * 2.0 - 1.0, ((scalar)iy + 0.5) / (scalar)height * 2.0 - 1.0};
-    constexpr const int n_prefetch = 64;
-    int local_index = threadIdx.x + threadIdx.y * blockDim.x;
-    __shared__ scalar bary_transforms_shared[3 * 3 * n_prefetch];
-    __shared__ color3 colors_shared[n_prefetch * 3];
-    __shared__ scalar opacities_shared[n_prefetch * 3];
-    // TODO maybe store colors together with transforms
-    // TODO maybe store per vertex data contiguously
     scalar alpha = 1.0;
     color3 total_color = {0, 0, 0};
     int end_out = start;
-    for (int j = start; j < end; j += n_prefetch)
+    for (int j = start; j < end && !stopped; j++)
     {
-        int num_done = __syncthreads_count(stopped);
-        if (num_done == blockDim.x * blockDim.y)
-            break;
-        int prefetch_index = j + local_index;
-        if (prefetch_index < end && local_index < n_prefetch)
-        {
-            int tri_index = per_tile_list[prefetch_index];
-            id3 tri = indices[tri_index];
-            for (int k = 0; k < 9; k++)
-            {
-                bary_transforms_shared[local_index * 9 + k] = bary_transforms[tri_index * 9 + k];
-            }
-            colors_shared[local_index * 3 + 0] = colors[tri.a];
-            colors_shared[local_index * 3 + 1] = colors[tri.b];
-            colors_shared[local_index * 3 + 2] = colors[tri.c];
-            opacities_shared[local_index * 3 + 0] = opacities[tri.a];
-            opacities_shared[local_index * 3 + 1] = opacities[tri.b];
-            opacities_shared[local_index * 3 + 2] = opacities[tri.c];
-        }
-        __syncthreads();
-        for (int k = 0; k < n_prefetch && j + k < end && !stopped; k++)
-        {
-            vec3 ws = {vertices[indices[per_tile_list[j + k]].a].w,
-                       vertices[indices[per_tile_list[j + k]].b].w,
-                       vertices[indices[per_tile_list[j + k]].c].w};
-            vec3 bary = apply_cart_to_bary(&bary_transforms_shared[k * 9], pos);
-            if (bary.x < 0.0 || bary.y < 0.0 || bary.z < 0.0)
-                continue;
-            if (bary.x == 0 && bary.y == 0 && bary.z == 0)
-                continue;
-            scalar opacity = interpolate3(bary, opacities_shared[k * 3], opacities_shared[k * 3 + 1], opacities_shared[k * 3 + 2], ws);
-            opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
-            color3 color = interpolate3(bary, colors_shared[k * 3], colors_shared[k * 3 + 1], colors_shared[k * 3 + 2], ws);
-            total_color = total_color + alpha * opacity * color;
-            alpha *= (1 - opacity);
-            end_out = j + k + 1;
-            if (alpha < early_stopping_threshold)
-                stopped = true;
-        }
+        int tri_index = per_tile_list[j];
+        id3 tri = indices[tri_index];
+        vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
+        vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
+        if (bary.x < 0.0 || bary.y < 0.0 || bary.z < 0.0)
+            continue;
+        if (bary.x == 0 && bary.y == 0 && bary.z == 0)
+            continue;
+        scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
+        opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
+        color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
+        total_color = total_color + alpha * opacity * color;
+        alpha *= (1 - opacity);
+        end_out = j + 1;
+        if (alpha < early_stopping_threshold)
+            stopped = true;
     }
     if (!oob)
     {

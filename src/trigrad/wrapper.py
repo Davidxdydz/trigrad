@@ -114,8 +114,6 @@ def render(
     """
     if tile_width * tile_height > 1024:
         raise ValueError("tile_width * tile_height must be <= 1024")
-    if tile_width * tile_height < 16:
-        raise ValueError("tile_width * tile_height must be >= 16, otherwise prefetching breaks")
     return Renderer.apply(
         vertices,
         indices,
