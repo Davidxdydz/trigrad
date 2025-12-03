@@ -35,6 +35,38 @@ def overlapping_squares(N, mins=0.1, maxs=0.9):
     return vertices, indices, colors
 
 
+def depth_overlap():
+    vertices = torch.tensor(
+        [
+            [-1.0, -1, 0, 1],
+            [1, -1, 0, 1],
+            [0, 1, -1, 1],
+            [-1, 1, 0, 1],
+            [1, 1, 0, 1],
+            [0, -1, -1, 1],
+        ],
+    )
+    indices = torch.tensor(
+        [
+            [0, 1, 2],
+            [3, 4, 5],
+        ],
+        dtype=torch.int32,
+    )
+    colors = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ],
+    )
+    opacities = torch.ones(vertices.shape[0])
+    return vertices, indices, colors, opacities
+
+
 def large_trianlges(N, r=0.5, unicolor=False):
     vertices = []
     indices = []
