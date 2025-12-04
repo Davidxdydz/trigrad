@@ -4,6 +4,7 @@
 #include <cub/cub.cuh>
 #include "util.h"
 #include <cooperative_groups.h>
+#include <limits>
 
 namespace cg = cooperative_groups;
 
@@ -266,6 +267,35 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> per_tile_lists(torch::Te
     return {per_tile_list, per_tile_depths, offsets};
 }
 
+template <int layers>
+__device__ inline void insert_sorted_topk(
+    int (&topk)[layers],
+    scalar (&topk_depths)[layers],
+    int &topk_idx,
+    scalar pixel_depth,
+    int value)
+{
+    // Limit where we are allowed to shift
+    int idx = min(topk_idx, layers - 1);
+
+    // Start from the last filled element and move backward
+    while (idx > 0 && pixel_depth < topk_depths[idx - 1])
+    {
+        // Shift the larger elements up
+        topk_depths[idx] = topk_depths[idx - 1];
+        topk[idx] = topk[idx - 1];
+        idx--;
+    }
+
+    // Insert here
+    topk_depths[idx] = pixel_depth;
+    topk[idx] = value;
+
+    // Increase size if not yet full
+    if (topk_idx < layers)
+        topk_idx++;
+}
+
 __global__ void render_forward_kernel(
     color3 *__restrict__ image, scalar *final_opacity, int *__restrict__ ends,                                                                   // output: color, final opacity, index of last rendered triangle per pixel
     const scalar *bary_transforms,                                                                                                               // cartesian to barycentric matrices, 3x3 per triangle
@@ -292,9 +322,31 @@ __global__ void render_forward_kernel(
     vec2 pos = {((scalar)ix + 0.5) / (scalar)width * 2.0 - 1.0, ((scalar)iy + 0.5) / (scalar)height * 2.0 - 1.0};
     scalar alpha = 1.0;
     color3 total_color = {0, 0, 0};
-    int end_out = start;
-    for (int j = start; j < end && !stopped; j++)
+    int end_out = 0;
+    constexpr const int layers = 32;
+    int topk[layers];
+    scalar topk_depths[layers];
+    int topk_idx = 0;
+    scalar depth_threshold = -std::numeric_limits<scalar>::infinity();
+    // collect top-k triangles
+    for (int j = start; j < end; j++)
     {
+        int tri_index = per_tile_list[j];
+        id3 tri = indices[tri_index];
+        vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
+        vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
+        if (bary.x < 0.0 || bary.y < 0.0 || bary.z < 0.0)
+            continue;
+        if (bary.x == 0 && bary.y == 0 && bary.z == 0)
+            continue;
+        scalar pixel_depth = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
+        // insertion sort with limited size, so push out the farthest triangle
+        insert_sorted_topk<layers>(topk, topk_depths, topk_idx, pixel_depth, j);
+    }
+    // render from the collected triangles
+    for (int i = 0; i < topk_idx && !stopped; i++)
+    {
+        int j = topk[i];
         int tri_index = per_tile_list[j];
         id3 tri = indices[tri_index];
         vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
@@ -308,7 +360,7 @@ __global__ void render_forward_kernel(
         color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
         total_color = total_color + alpha * opacity * color;
         alpha *= (1 - opacity);
-        end_out = j + 1;
+        end_out = i + 1;
         if (alpha < early_stopping_threshold)
             stopped = true;
     }
@@ -470,16 +522,41 @@ __global__ void render_backward_kernel(
         return;
     int index = iy * width + ix;
     int start = offsets[tile_index];
-    int end = ends[index];
-    // scalar x = ((scalar)ix + 0.5) / (scalar)width * 2.0 - 1.0;
-    // scalar y = ((scalar)iy + 0.5) / (scalar)height * 2.0 - 1.0;
+    int processed_limit = ends[index];
+    int tile_end = offsets[tile_index + 1];
     vec2 pos = (vec2({ix, iy}) + 0.5) / vec2({width, height}) * 2.0 - 1.0;
 
     scalar alpha = final_opacities[index];
     vec3 s = {0, 0, 0};
-
-    for (int k = end - 1; k >= start; k--)
+    constexpr const int layers = 32;
+    int topk[layers];
+    scalar topk_depths[layers];
+    int topk_idx = 0;
+    for (int i = 0; i < layers; ++i)
     {
+        topk[i] = -1;
+        topk_depths[i] = std::numeric_limits<scalar>::infinity();
+    }
+
+    for (int j = start; j < tile_end; j++)
+    {
+        int tri_index = sorted_ids[j];
+        id3 tri = indices[tri_index];
+        vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
+        vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
+        if (bary.x < 0.0 || bary.y < 0.0 || bary.z < 0.0)
+            continue;
+        if (bary.x == 0 && bary.y == 0 && bary.z == 0)
+            continue;
+        scalar pixel_depth = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
+        insert_sorted_topk<layers>(topk, topk_depths, topk_idx, pixel_depth, j);
+    }
+
+    int processed_count = processed_limit < topk_idx ? processed_limit : topk_idx;
+
+    for (int idx = processed_count - 1; idx >= 0; idx--)
+    {
+        int k = topk[idx];
         int id = sorted_ids[k];
         id3 i3 = indices[id];
         vec3 bary = apply_cart_to_bary(&bary_transforms[id * 9], pos);
