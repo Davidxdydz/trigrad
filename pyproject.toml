@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=65", "wheel", "torch"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trigrad"
+version = "0.1.0"
+description = "Differentiable triangule rasterizer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["torch"]
+authors = [{ name = "David Berger" }]
+
+[project.urls]
+Homepage = "https://github.com/Davidxdydz/trigrad"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+trigrad = ["*.cu", "*.h"]
