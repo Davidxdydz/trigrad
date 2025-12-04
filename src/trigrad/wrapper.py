@@ -24,6 +24,7 @@ class Renderer(Function):
         early_stopping_threshold: float = 1 / 256,
         record_timing: bool = False,
         per_pixel_sort: bool = True,
+        max_layers: int = 32,
     ) -> torch.Tensor:
         N, _ = vertices.shape
         check_tensor(vertices, "vertices", (N, 4))
@@ -31,6 +32,8 @@ class Renderer(Function):
         check_tensor(opacities, "opacities", (N,))
         N, _ = indices.shape
         check_tensor(indices, "indices", (N, 3), torch.int32)
+        if max_layers <= 0:
+            max_layers = N + 1
 
         ctx.width = width
         ctx.height = height
@@ -39,6 +42,7 @@ class Renderer(Function):
         ctx.early_stopping_threshold = early_stopping_threshold
         ctx.record_timing = record_timing
         ctx.per_pixel_sort = per_pixel_sort
+        ctx.max_layers = max_layers
         if N < 1:
             ctx.skipped = True
             image = torch.zeros((height, width, 3), dtype=colors.dtype, device=colors.device)
@@ -58,6 +62,7 @@ class Renderer(Function):
                 early_stopping_threshold,
                 not record_timing,
                 per_pixel_sort,
+                max_layers,
             )
             ctx.save_for_backward(vertices, indices, colors, opacities, *args)
 
@@ -83,6 +88,7 @@ class Renderer(Function):
                 ctx.tile_height,
                 ctx.early_stopping_threshold,
                 ctx.per_pixel_sort,
+                ctx.max_layers,
             )
         return (
             grad_vertices,  # vertices
@@ -96,6 +102,7 @@ class Renderer(Function):
             None,  # early_stopping_threshold
             None,  # record_timing
             None,  # per_pixel_sort
+            None,  # max_layers
         )
 
 
@@ -111,6 +118,7 @@ def render(
     early_stopping_threshold: float = 1 / 256,
     record_timing: bool = False,
     per_pixel_sort: bool = True,
+    max_layers: int = 32,
 ) -> torch.Tensor | Tuple[torch.Tensor, dict]:
     """
     vertices : (N, 4) tensor of triangle vertices (x'/w',y'/w',z'/w',1/w') in [-1,1] clip space
@@ -118,6 +126,7 @@ def render(
     colors : (N, 3) tensor of triangle vertex colors
     opacities : (N,) tensor of triangle vertex opacities
     per_pixel_sort : bool indicating whether to sort fragments per pixel or per tile
+    max_layers : maximum number of layers to composite per pixel, <= 0 for no limit
     """
     if tile_width * tile_height > 1024:
         raise ValueError("tile_width * tile_height must be <= 1024")
@@ -133,4 +142,5 @@ def render(
         early_stopping_threshold,
         record_timing,
         per_pixel_sort,
+        max_layers,
     )

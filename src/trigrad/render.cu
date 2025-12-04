@@ -8,6 +8,46 @@
 
 namespace cg = cooperative_groups;
 
+struct CudaTimer
+{
+    std::map<std::string, float> &timings;
+    cudaEvent_t _start, _stop;
+    bool active = false;
+    std::string current_name;
+    bool disable;
+
+    CudaTimer(std::map<std::string, float> &timings_, bool disable_ = false) : timings(timings_), disable(disable_)
+    {
+        if (disable)
+            return;
+        cudaEventCreate(&_start);
+        cudaEventCreate(&_stop);
+    }
+    void stop()
+    {
+        if (disable)
+            return;
+        if (!active)
+            return;
+        cudaEventRecord(_stop);
+        cudaEventSynchronize(_stop);
+        float milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, _start, _stop);
+        timings[current_name] = milliseconds / 1000.0;
+        active = false;
+    }
+    void start(std::string name)
+    {
+        if (disable)
+            return;
+        if (active)
+            stop();
+        cudaEventRecord(_start);
+        current_name = name;
+        active = true;
+    }
+};
+
 __device__ void touched_tiles(
     vec2 a, vec2 b, vec2 c,          // triangle vertices
     int width, int height,           // image size
@@ -266,9 +306,38 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> per_tile_lists(torch::Te
 
     return {per_tile_list, per_tile_depths, offsets};
 }
-template <int layers>
-__device__ inline void insert_sorted_topk(int (&topk)[layers],
-                                          scalar (&topk_depths)[layers],
+
+__global__ void cartesian_to_bary_kernel(
+    scalar *__restrict__ output,                                        // output: barycentric transformation matrices nx3x3
+    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
+    int num_triangles                                                   // number of triangles
+)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= num_triangles)
+        return;
+    id3 i = indices[id];
+    vec2 a = xy(vertices[i.a]);
+    vec2 b = xy(vertices[i.b]);
+    vec2 c = xy(vertices[i.c]);
+    int mid = id * 3 * 3;
+    scalar denom = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
+    if (denom == 0)
+        denom = 1;
+
+    output[mid + 0] = (b.y - c.y) / denom;
+    output[mid + 1] = (c.x - b.x) / denom;
+    output[mid + 2] = (b.x * c.y - c.x * b.y) / denom;
+    output[mid + 3] = (c.y - a.y) / denom;
+    output[mid + 4] = (a.x - c.x) / denom;
+    output[mid + 5] = (c.x * a.y - a.x * c.y) / denom;
+    output[mid + 6] = (a.y - b.y) / denom;
+    output[mid + 7] = (b.x - a.x) / denom;
+    output[mid + 8] = (a.x * b.y - b.x * a.y) / denom;
+}
+__device__ inline void insert_sorted_topk(const int layers,
+                                          int *topk,
+                                          scalar *topk_depths,
                                           int &topk_idx,
                                           scalar pixel_depth,
                                           int value,
@@ -303,10 +372,10 @@ __device__ inline void insert_sorted_topk(int (&topk)[layers],
         topk_idx++;
 }
 
-template <int K>
 __device__ inline int select_next_k_in_tile(
-    int (&out_j)[K],
-    scalar (&out_depths)[K],
+    const int K,
+    int *out_j,
+    scalar *out_depths,
     const scalar lastDepth,
     const int lastJ,
     const int start,
@@ -341,35 +410,28 @@ __device__ inline int select_next_k_in_tile(
         if (pixel_depth == lastDepth && j <= lastJ)
             continue;
 
-        insert_sorted_topk<K>(out_j, out_depths, topk_idx, pixel_depth, j, false);
+        insert_sorted_topk(K, out_j, out_depths, topk_idx, pixel_depth, j, false);
     }
 
     return topk_idx;
 }
 
-// -----------------------------------------------------------------------------
-// Kernel: iterative depth-peeling / blended forward renderer
-// -----------------------------------------------------------------------------
 __global__ void render_forward_kernel(
-    color3 *__restrict__ image, scalar *final_opacity, int *__restrict__ ends,                                                                   // output: color, final opacity, index of last rendered triangle per pixel
-    const scalar *bary_transforms,                                                                                                               // cartesian to barycentric matrices, 3x3 per triangle
-    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle indices, colors and opacities
-    const int *__restrict__ per_tile_list, const int *__restrict__ offsets,                                                                      // values from sorting
+    color3 *__restrict__ image, scalar *final_opacity, int *__restrict__ ends,
+    const scalar *bary_transforms,
+    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities,
+    const int *__restrict__ per_tile_list, const int *__restrict__ offsets,
     int width, int height,
     const scalar early_stopping_threshold,
-    bool per_pixel_sort)
+    bool per_pixel_sort,
+    int max_layers)
 {
     int tile_index = blockIdx.y * gridDim.x + blockIdx.x;
     int ix = blockIdx.x * blockDim.x + threadIdx.x;
     int iy = blockIdx.y * blockDim.y + threadIdx.y;
 
-    bool stopped = false;
-    bool oob = false;
     if (iy >= height || ix >= width)
-    {
-        stopped = true;
-        oob = true;
-    }
+        return;
 
     int index = iy * width + ix;
     int start = offsets[tile_index];
@@ -386,9 +448,11 @@ __global__ void render_forward_kernel(
     int batch_j[layers];
     scalar batch_depths[layers];
 
+    int blended_count = 0;
+
     if (!per_pixel_sort)
     {
-        for (int j = start; j < end && !stopped; ++j)
+        for (int j = start; j < end && alpha > early_stopping_threshold && blended_count < max_layers; ++j)
         {
             int tri_lookup = per_tile_list[j];
             id3 tri = indices[tri_lookup];
@@ -408,8 +472,7 @@ __global__ void render_forward_kernel(
             alpha *= (1 - opacity);
 
             end_out++;
-            if (alpha < early_stopping_threshold)
-                stopped = true;
+            blended_count++;
         }
     }
     else
@@ -417,16 +480,18 @@ __global__ void render_forward_kernel(
         scalar lastDepth = -std::numeric_limits<scalar>::infinity();
         int lastJ = -1;
 
-        while (!stopped && alpha > early_stopping_threshold)
+        while (alpha > early_stopping_threshold && blended_count < max_layers)
         {
-            int found = select_next_k_in_tile<layers>(
-                batch_j, batch_depths, lastDepth, lastJ, start, end,
-                per_tile_list, bary_transforms, vertices, indices, pos);
+            int batch_size = min(layers, max_layers - blended_count);
+            int found = select_next_k_in_tile(batch_size, batch_j, batch_depths, lastDepth, lastJ, start, end,
+                                              per_tile_list, bary_transforms, vertices, indices, pos);
 
             if (found == 0)
                 break;
 
-            for (int i = 0; i < found && !stopped; ++i)
+            int to_process = min(found, max_layers - blended_count);
+
+            for (int i = 0; i < to_process; ++i)
             {
                 int j = batch_j[i];
                 int tri_lookup = per_tile_list[j];
@@ -447,50 +512,172 @@ __global__ void render_forward_kernel(
                 alpha *= (1 - opacity);
 
                 end_out++;
-                if (alpha < early_stopping_threshold)
-                    stopped = true;
+                blended_count++;
             }
 
-            lastDepth = batch_depths[found - 1];
-            lastJ = batch_j[found - 1];
+            lastDepth = batch_depths[to_process - 1];
+            lastJ = batch_j[to_process - 1];
         }
     }
 
-    if (!oob)
-    {
-        ends[index] = end_out;
-        final_opacity[index] = alpha;
-        image[index] = total_color;
-    }
+    ends[index] = end_out;
+    final_opacity[index] = alpha;
+    image[index] = total_color;
 }
 
-__global__ void cartesian_to_bary_kernel(
-    scalar *__restrict__ output,                                        // output: barycentric transformation matrices nx3x3
-    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, // vertices and indices of the triangles
-    int num_triangles                                                   // number of triangles
-)
+__global__ void render_backward_kernel(
+    vec4 *__restrict__ grad_vertices, color3 *__restrict__ grad_colors, scalar *__restrict__ grad_opacities,
+    const color3 *__restrict__ grad_output,
+    const scalar *__restrict__ final_opacities, const int *__restrict__ ends,
+    const int *__restrict__ sorted_ids, const int *__restrict__ offsets,
+    const scalar *__restrict__ bary_transforms,
+    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities,
+    int width, int height,
+    const scalar early_stopping_threshold,
+    bool per_pixel_sort,
+    int max_layers)
 {
-    int id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (id >= num_triangles)
+    int tile_index = blockIdx.y * gridDim.x + blockIdx.x;
+    int ix = blockIdx.x * blockDim.x + threadIdx.x;
+    int iy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (iy >= height || ix >= width)
         return;
-    id3 i = indices[id];
-    vec2 a = xy(vertices[i.a]);
-    vec2 b = xy(vertices[i.b]);
-    vec2 c = xy(vertices[i.c]);
-    int mid = id * 3 * 3;
-    scalar denom = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
-    if (denom == 0)
-        denom = 1;
 
-    output[mid + 0] = (b.y - c.y) / denom;
-    output[mid + 1] = (c.x - b.x) / denom;
-    output[mid + 2] = (b.x * c.y - c.x * b.y) / denom;
-    output[mid + 3] = (c.y - a.y) / denom;
-    output[mid + 4] = (a.x - c.x) / denom;
-    output[mid + 5] = (c.x * a.y - a.x * c.y) / denom;
-    output[mid + 6] = (a.y - b.y) / denom;
-    output[mid + 7] = (b.x - a.x) / denom;
-    output[mid + 8] = (a.x * b.y - b.x * a.y) / denom;
+    int index = iy * width + ix;
+    int start = offsets[tile_index];
+    int tile_end = offsets[tile_index + 1];
+    int processed_limit = min(ends[index], max_layers);
+
+    vec2 pos = {((scalar)ix + 0.5f) / (scalar)width * 2.0f - 1.0f,
+                ((scalar)iy + 0.5f) / (scalar)height * 2.0f - 1.0f};
+
+    scalar alpha = final_opacities[index];
+    vec3 s = {0.0f, 0.0f, 0.0f};
+
+    constexpr const int layers = 32;
+    int batch_j[layers];
+    scalar batch_depths[layers];
+
+    if (!per_pixel_sort)
+    {
+        for (int i = 0; i < processed_limit; ++i)
+        {
+            int j = start + i;
+            int tri_index = sorted_ids[j];
+            id3 tri = indices[tri_index];
+            vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
+            vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
+            if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
+                continue;
+            if (bary.x == 0.0f && bary.y == 0.0f && bary.z == 0.0f)
+                continue;
+
+            scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
+            opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
+            color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
+
+            scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);
+            auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
+                interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
+
+            atomicAdd(&grad_opacities[tri.a], d_do1);
+            atomicAdd(&grad_opacities[tri.b], d_do2);
+            atomicAdd(&grad_opacities[tri.c], d_do3);
+
+            alpha /= (1.0 - opacity);
+            s += color * opacity * alpha;
+
+            color3 d_rgb_dc = alpha * opacity * grad_output[index];
+            auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
+                interpolate3_backward(d_rgb_dc, bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
+
+            atomicAdd3(&grad_colors[tri.a], drgb_dc1);
+            atomicAdd3(&grad_colors[tri.b], drgb_dc2);
+            atomicAdd3(&grad_colors[tri.c], drgb_dc3);
+
+            vec3 d_dbary = d_do_do_dbary + drgb_dc_dc_dbary;
+            auto [d_dva_xy, d_dvb_xy, d_dvc_xy, d_dp] =
+                barycentric_backward(d_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
+            vec3 d_dw = d_do_do_dw + drgb_dc_dc_dw;
+            vec4 d_dva = {d_dva_xy.x, d_dva_xy.y, 0, d_dw.x};
+            vec4 d_dvb = {d_dvb_xy.x, d_dvb_xy.y, 0, d_dw.y};
+            vec4 d_dvc = {d_dvc_xy.x, d_dvc_xy.y, 0, d_dw.z};
+
+            atomicAdd4(&grad_vertices[tri.a], d_dva);
+            atomicAdd4(&grad_vertices[tri.b], d_dvb);
+            atomicAdd4(&grad_vertices[tri.c], d_dvc);
+        }
+    }
+    else
+    {
+        scalar lastDepth = -std::numeric_limits<scalar>::infinity();
+        int lastJ = -1;
+        int remaining = processed_limit;
+
+        while (remaining > 0)
+        {
+            int batch_size = min(layers, remaining);
+            int found = select_next_k_in_tile(batch_size, batch_j, batch_depths, lastDepth, lastJ, start, tile_end,
+                                              sorted_ids, bary_transforms, vertices, indices, pos);
+
+            if (found == 0)
+                break;
+
+            int to_process = min(found, remaining);
+
+            for (int idx = to_process - 1; idx >= 0; --idx)
+            {
+                int k = batch_j[idx];
+                int tri_index = sorted_ids[k];
+                id3 tri = indices[tri_index];
+                vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
+                vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
+                if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
+                    continue;
+                if (bary.x == 0.0f && bary.y == 0.0f && bary.z == 0.0f)
+                    continue;
+
+                scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
+                opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
+                color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
+
+                scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);
+                auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
+                    interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
+
+                atomicAdd(&grad_opacities[tri.a], d_do1);
+                atomicAdd(&grad_opacities[tri.b], d_do2);
+                atomicAdd(&grad_opacities[tri.c], d_do3);
+
+                alpha /= (1.0 - opacity);
+                s += color * opacity * alpha;
+
+                color3 d_rgb_dc = alpha * opacity * grad_output[index];
+                auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
+                    interpolate3_backward(d_rgb_dc, bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
+
+                atomicAdd3(&grad_colors[tri.a], drgb_dc1);
+                atomicAdd3(&grad_colors[tri.b], drgb_dc2);
+                atomicAdd3(&grad_colors[tri.c], drgb_dc3);
+
+                vec3 d_dbary = d_do_do_dbary + drgb_dc_dc_dbary;
+                auto [d_dva_xy, d_dvb_xy, d_dvc_xy, d_dp] =
+                    barycentric_backward(d_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
+                vec3 d_dw = d_do_do_dw + drgb_dc_dc_dw;
+                vec4 d_dva = {d_dva_xy.x, d_dva_xy.y, 0, d_dw.x};
+                vec4 d_dvb = {d_dvb_xy.x, d_dvb_xy.y, 0, d_dw.y};
+                vec4 d_dvc = {d_dvc_xy.x, d_dvc_xy.y, 0, d_dw.z};
+
+                atomicAdd4(&grad_vertices[tri.a], d_dva);
+                atomicAdd4(&grad_vertices[tri.b], d_dvb);
+                atomicAdd4(&grad_vertices[tri.c], d_dvc);
+            }
+
+            lastDepth = batch_depths[to_process - 1];
+            lastJ = batch_j[to_process - 1];
+            remaining -= to_process;
+        }
+    }
 }
 
 torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices)
@@ -508,52 +695,13 @@ torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices)
         triangle_count);
     return output;
 }
-struct CudaTimer
-{
-    std::map<std::string, float> &timings;
-    cudaEvent_t _start, _stop;
-    bool active = false;
-    std::string current_name;
-    bool disable;
-
-    CudaTimer(std::map<std::string, float> &timings_, bool disable_ = false) : timings(timings_), disable(disable_)
-    {
-        if (disable)
-            return;
-        cudaEventCreate(&_start);
-        cudaEventCreate(&_stop);
-    }
-    void stop()
-    {
-        if (disable)
-            return;
-        if (!active)
-            return;
-        cudaEventRecord(_stop);
-        cudaEventSynchronize(_stop);
-        float milliseconds = 0;
-        cudaEventElapsedTime(&milliseconds, _start, _stop);
-        timings[current_name] = milliseconds / 1000.0;
-        active = false;
-    }
-    void start(std::string name)
-    {
-        if (disable)
-            return;
-        if (active)
-            stop();
-        cudaEventRecord(_start);
-        current_name = name;
-        active = true;
-    }
-};
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::map<std::string, float>> render_forward(
     torch::Tensor vertices, torch::Tensor indices, torch::Tensor colors, torch::Tensor opacities, // input: vertices, indices, colors and opacities
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
     const scalar early_stopping_threshold,                                                        // remaining opacity at which to stop rendering
-    bool disable_timing, bool per_pixel_sort)
+    bool disable_timing, bool per_pixel_sort, int max_layers)
 {
     std::map<std::string, float> timings;
     CudaTimer timer(timings, disable_timing);
@@ -591,168 +739,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
         const_id3(indices), const_color3(colors), const_scalar(opacities),
         const_int(ids), const_int(offsets),
         width, height,
-        early_stopping_threshold, per_pixel_sort);
+        early_stopping_threshold, per_pixel_sort, max_layers);
     timer.stop();
     return {image, ids, offsets, bary_transforms, final_opacity, ends, timings};
-}
-__global__ void render_backward_kernel(
-    vec4 *__restrict__ grad_vertices, color3 *__restrict__ grad_colors, scalar *__restrict__ grad_opacities,                                     // output: gradients
-    const color3 *__restrict__ grad_output,                                                                                                      // upstream gradient
-    const scalar *__restrict__ final_opacities, const int *__restrict__ ends,                                                                    // final opacities and indices
-    const int *__restrict__ sorted_ids, const int *__restrict__ offsets,                                                                         // ids and offsets for sorted rendering
-    const scalar *__restrict__ bary_transforms,                                                                                                  // cartesian to barycentric transformation matrices
-    const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle data
-    int width, int height,                                                                                                                       // image size
-    const scalar early_stopping_threshold,                                                                                                       // remaining opacity at which to stop rendering
-    bool per_pixel_sort)
-{
-    int tile_index = blockIdx.y * gridDim.x + blockIdx.x;
-    int ix = blockIdx.x * blockDim.x + threadIdx.x;
-    int iy = blockIdx.y * blockDim.y + threadIdx.y;
-    if (iy >= height || ix >= width)
-        return;
-
-    int index = iy * width + ix;
-    int start = offsets[tile_index];
-    int tile_end = offsets[tile_index + 1];
-    int processed_limit = ends[index];
-
-    vec2 pos = {((scalar)ix + 0.5f) / (scalar)width * 2.0f - 1.0f,
-                ((scalar)iy + 0.5f) / (scalar)height * 2.0f - 1.0f};
-
-    scalar alpha = final_opacities[index];
-    vec3 s = {0.0f, 0.0f, 0.0f};
-
-    constexpr const int layers = 32;
-    int batch_j[layers];
-    scalar batch_depths[layers];
-
-    if (!per_pixel_sort)
-    {
-        for (int i = 0; i < processed_limit; ++i)
-        {
-            int j = start + i;
-            int tri_index = sorted_ids[j];
-            id3 tri = indices[tri_index];
-            vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
-            vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
-            if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
-                continue;
-            if (bary.x == 0.0f && bary.y == 0.0f && bary.z == 0.0f)
-                continue;
-
-            scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-            opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
-            color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-
-            // opacity gradient
-            scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);
-            auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
-                interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-
-            atomicAdd(&grad_opacities[tri.a], d_do1);
-            atomicAdd(&grad_opacities[tri.b], d_do2);
-            atomicAdd(&grad_opacities[tri.c], d_do3);
-
-            alpha /= (1.0 - opacity);
-            s += color * opacity * alpha;
-
-            // color gradient
-            color3 d_rgb_dc = alpha * opacity * grad_output[index];
-            auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
-                interpolate3_backward(d_rgb_dc, bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-
-            atomicAdd3(&grad_colors[tri.a], drgb_dc1);
-            atomicAdd3(&grad_colors[tri.b], drgb_dc2);
-            atomicAdd3(&grad_colors[tri.c], drgb_dc3);
-
-            // vertex gradient
-            vec3 d_dbary = d_do_do_dbary + drgb_dc_dc_dbary;
-            auto [d_dva_xy, d_dvb_xy, d_dvc_xy, d_dp] =
-                barycentric_backward(d_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
-            vec3 d_dw = d_do_do_dw + drgb_dc_dc_dw;
-            vec4 d_dva = {d_dva_xy.x, d_dva_xy.y, 0, d_dw.x};
-            vec4 d_dvb = {d_dvb_xy.x, d_dvb_xy.y, 0, d_dw.y};
-            vec4 d_dvc = {d_dvc_xy.x, d_dvc_xy.y, 0, d_dw.z};
-
-            atomicAdd4(&grad_vertices[tri.a], d_dva);
-            atomicAdd4(&grad_vertices[tri.b], d_dvb);
-            atomicAdd4(&grad_vertices[tri.c], d_dvc);
-        }
-    }
-    else
-    {
-        scalar lastDepth = -std::numeric_limits<scalar>::infinity();
-        int lastJ = -1;
-        int remaining = processed_limit;
-
-        while (remaining > 0)
-        {
-            int found = select_next_k_in_tile<layers>(
-                batch_j, batch_depths, lastDepth, lastJ, start, tile_end,
-                sorted_ids, bary_transforms, vertices, indices, pos);
-
-            if (found == 0)
-                break;
-
-            int to_process = (found < remaining) ? found : remaining;
-
-            for (int idx = to_process - 1; idx >= 0; --idx)
-            {
-                int k = batch_j[idx];
-                int tri_index = sorted_ids[k];
-                id3 tri = indices[tri_index];
-                vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
-                vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
-                if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
-                    continue;
-                if (bary.x == 0.0f && bary.y == 0.0f && bary.z == 0.0f)
-                    continue;
-
-                scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-                opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
-                color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-
-                // opacity gradient
-                scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);
-                auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
-                    interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-
-                atomicAdd(&grad_opacities[tri.a], d_do1);
-                atomicAdd(&grad_opacities[tri.b], d_do2);
-                atomicAdd(&grad_opacities[tri.c], d_do3);
-
-                alpha /= (1.0 - opacity);
-                s += color * opacity * alpha;
-
-                // color gradient
-                color3 d_rgb_dc = alpha * opacity * grad_output[index];
-                auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
-                    interpolate3_backward(d_rgb_dc, bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-
-                atomicAdd3(&grad_colors[tri.a], drgb_dc1);
-                atomicAdd3(&grad_colors[tri.b], drgb_dc2);
-                atomicAdd3(&grad_colors[tri.c], drgb_dc3);
-
-                // vertex gradient
-                vec3 d_dbary = d_do_do_dbary + drgb_dc_dc_dbary;
-                auto [d_dva_xy, d_dvb_xy, d_dvc_xy, d_dp] =
-                    barycentric_backward(d_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
-                vec3 d_dw = d_do_do_dw + drgb_dc_dc_dw;
-                vec4 d_dva = {d_dva_xy.x, d_dva_xy.y, 0, d_dw.x};
-                vec4 d_dvb = {d_dvb_xy.x, d_dvb_xy.y, 0, d_dw.y};
-                vec4 d_dvc = {d_dvc_xy.x, d_dvc_xy.y, 0, d_dw.z};
-
-                atomicAdd4(&grad_vertices[tri.a], d_dva);
-                atomicAdd4(&grad_vertices[tri.b], d_dvb);
-                atomicAdd4(&grad_vertices[tri.c], d_dvc);
-            }
-
-            lastDepth = batch_depths[to_process - 1];
-            lastJ = batch_j[to_process - 1];
-            remaining -= to_process;
-        }
-    }
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
@@ -764,7 +753,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
     const scalar early_stopping_threshold,                                                        // remaining opacity at which to stop rendering
-    bool per_pixel_sort)
+    bool per_pixel_sort, int max_layers)
 {
     colors = colors.contiguous();
     vertices = vertices.contiguous();
@@ -789,6 +778,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
         const_scalar(bary_transforms),
         const_vec4(vertices), const_id3(indices), const_color3(colors), const_scalar(opacities),
         width, height,
-        early_stopping_threshold, per_pixel_sort);
+        early_stopping_threshold, per_pixel_sort, max_layers);
     return {grad_vertices, grad_colors, grad_opacities};
 }
