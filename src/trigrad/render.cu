@@ -273,8 +273,19 @@ __device__ inline void insert_sorted_topk(
     scalar (&topk_depths)[layers],
     int &topk_idx,
     scalar pixel_depth,
-    int value)
+    int value, bool ignore_sort = false)
 {
+    if (ignore_sort)
+    {
+        // If sorting is disabled, just fill up to layers
+        if (topk_idx < layers)
+        {
+            topk[topk_idx] = value;
+            topk_depths[topk_idx] = pixel_depth;
+            topk_idx++;
+        }
+        return;
+    }
     // Limit where we are allowed to shift
     int idx = min(topk_idx, layers - 1);
 
@@ -302,7 +313,8 @@ __global__ void render_forward_kernel(
     const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle indices, colors and opacities
     const int *__restrict__ per_tile_list, const int *__restrict__ offsets,                                                                      // values from sorting
     int width, int height,
-    const scalar early_stopping_threshold
+    const scalar early_stopping_threshold,
+    bool per_pixel_sort
 
 )
 {
@@ -341,7 +353,7 @@ __global__ void render_forward_kernel(
             continue;
         scalar pixel_depth = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
         // insertion sort with limited size, so push out the farthest triangle
-        insert_sorted_topk<layers>(topk, topk_depths, topk_idx, pixel_depth, j);
+        insert_sorted_topk<layers>(topk, topk_depths, topk_idx, pixel_depth, j, !per_pixel_sort);
     }
     // render from the collected triangles
     for (int i = 0; i < topk_idx && !stopped; i++)
@@ -461,7 +473,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
     const scalar early_stopping_threshold,                                                        // remaining opacity at which to stop rendering
-    bool disable_timing)
+    bool disable_timing, bool per_pixel_sort)
 {
     std::map<std::string, float> timings;
     CudaTimer timer(timings, disable_timing);
@@ -499,7 +511,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
         const_id3(indices), const_color3(colors), const_scalar(opacities),
         const_int(ids), const_int(offsets),
         width, height,
-        early_stopping_threshold);
+        early_stopping_threshold, per_pixel_sort);
     timer.stop();
     return {image, ids, offsets, bary_transforms, final_opacity, ends, timings};
 }
@@ -512,8 +524,8 @@ __global__ void render_backward_kernel(
     const scalar *__restrict__ bary_transforms,                                                                                                  // cartesian to barycentric transformation matrices
     const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities, // triangle data
     int width, int height,                                                                                                                       // image size
-    const scalar early_stopping_threshold                                                                                                        // remaining opacity at which to stop rendering
-)
+    const scalar early_stopping_threshold,                                                                                                       // remaining opacity at which to stop rendering
+    bool per_pixel_sort)
 {
     int tile_index = blockIdx.y * gridDim.x + blockIdx.x;
     int ix = blockIdx.x * blockDim.x + threadIdx.x;
@@ -549,7 +561,7 @@ __global__ void render_backward_kernel(
         if (bary.x == 0 && bary.y == 0 && bary.z == 0)
             continue;
         scalar pixel_depth = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
-        insert_sorted_topk<layers>(topk, topk_depths, topk_idx, pixel_depth, j);
+        insert_sorted_topk<layers>(topk, topk_depths, topk_idx, pixel_depth, j, !per_pixel_sort);
     }
 
     int processed_count = processed_limit < topk_idx ? processed_limit : topk_idx;
@@ -613,8 +625,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     torch::Tensor final_opacities, torch::Tensor ends,                                            // final opacities and indices
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
-    const scalar early_stopping_threshold                                                         // remaining opacity at which to stop rendering
-)
+    const scalar early_stopping_threshold,                                                        // remaining opacity at which to stop rendering
+    bool per_pixel_sort)
 {
     colors = colors.contiguous();
     vertices = vertices.contiguous();
@@ -639,6 +651,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
         const_scalar(bary_transforms),
         const_vec4(vertices), const_id3(indices), const_color3(colors), const_scalar(opacities),
         width, height,
-        early_stopping_threshold);
+        early_stopping_threshold, per_pixel_sort);
     return {grad_vertices, grad_colors, grad_opacities};
 }
