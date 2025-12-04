@@ -5,7 +5,8 @@ from torch.autograd.function import FunctionCtx
 import trigrad._C as _C
 from trigrad.util import create_check
 
-check_tensor = create_check()
+check_tensor = create_check("cuda", _C.precision)
+precision = _C.precision
 
 
 class Renderer(Function):

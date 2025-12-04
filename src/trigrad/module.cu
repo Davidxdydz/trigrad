@@ -14,4 +14,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("interpolate3_vector_backward_torch", &interpolate3_vector_backward_torch);
     m.def("barycentric_torch", &barycentric_torch);
     m.def("barycentric_backward_torch", &barycentric_backward_torch);
+#ifdef DOUBLE_PRECISION
+    m.attr("precision") = torch::kFloat64;
+#else
+    m.attr("precision") = torch::kFloat32;
+#endif
 }

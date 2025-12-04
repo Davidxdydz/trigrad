@@ -1,9 +1,4 @@
-import torch
-
-precision = torch.float64
-
-
-def create_check(default_device="cuda", default_dtype=precision):
+def create_check(default_device, default_dtype):
     def check_tensor(tensor, name, shape=None, dtype=None, device=None):
         if not isinstance(shape, tuple):
             shape = (shape,)

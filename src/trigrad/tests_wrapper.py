@@ -5,7 +5,7 @@ from torch.autograd.function import FunctionCtx
 import trigrad._C as _C
 from trigrad.util import create_check
 
-check_tensor = create_check("cpu")
+check_tensor = create_check("cpu", _C.precision)
 
 
 class Barycentric(Function):

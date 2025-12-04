@@ -1,11 +1,11 @@
-from .wrapper import render
+from .wrapper import render, precision
 
 from .tests_wrapper import (
     barycentric,
     interpolate3_scalar,
     interpolate3_vector,
 )
-from .util import precision
+
 
 __all__ = [
     "render",
