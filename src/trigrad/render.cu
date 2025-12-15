@@ -57,8 +57,8 @@ __device__ void touched_tiles(
 )
 {
 
-    double v = cross2d(b - a, c - a);
-    if (v == 0 || std::isnan(v) || std::isinf(v))
+    scalar v = cross2d(b - a, c - a);
+    if (std::abs(v) < eff_zero || std::isnan(v) || std::isinf(v))
     {
         // triangle is too small, return empty tile range
         mins = {0, -1};
@@ -398,9 +398,7 @@ __device__ inline int select_next_k_in_tile(
         vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
         vec3 bary = apply_cart_to_bary(&bary_transforms[tri_lookup * 9], pos);
 
-        if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
-            continue;
-        if (bary.x == 0.0f && bary.y == 0.0f && bary.z == 0.0f)
+        if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
             continue;
 
         scalar pixel_depth = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
@@ -440,8 +438,8 @@ __global__ void render_forward_kernel(
     vec2 pos = {((scalar)ix + 0.5f) / (scalar)width * 2.0f - 1.0f,
                 ((scalar)iy + 0.5f) / (scalar)height * 2.0f - 1.0f};
 
-    scalar alpha = 1.0f;
-    color3 total_color = {0.0f, 0.0f, 0.0f};
+    scalar alpha = scalar(1.0);
+    color3 total_color = {scalar(0.0), scalar(0.0), scalar(0.0)};
     int end_out = 0;
 
     constexpr const int layers = 32;
@@ -459,13 +457,11 @@ __global__ void render_forward_kernel(
             vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
             vec3 bary = apply_cart_to_bary(&bary_transforms[tri_lookup * 9], pos);
 
-            if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
-                continue;
-            if (bary.x == 0.0f && bary.y == 0.0f && bary.z == 0.0f)
+            if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
                 continue;
 
             scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-            opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
+            opacity = std::clamp(opacity, scalar(0.0), max_opacity);
             color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
             total_color = total_color + alpha * opacity * color;
@@ -499,13 +495,11 @@ __global__ void render_forward_kernel(
                 vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
                 vec3 bary = apply_cart_to_bary(&bary_transforms[tri_lookup * 9], pos);
 
-                if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
-                    continue;
-                if (bary.x == 0.0f && bary.y == 0.0f && bary.z == 0.0f)
+                if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
                     continue;
 
                 scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-                opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
+                opacity = std::clamp(opacity, scalar(0.0), max_opacity);
                 color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
                 total_color = total_color + alpha * opacity * color;
@@ -552,7 +546,7 @@ __global__ void render_backward_kernel(
                 ((scalar)iy + 0.5f) / (scalar)height * 2.0f - 1.0f};
 
     scalar alpha = final_opacities[index];
-    vec3 s = {0.0f, 0.0f, 0.0f};
+    vec3 s = {scalar(0.0), scalar(0.0), scalar(0.0)};
 
     constexpr const int layers = 32;
     int batch_j[layers];
@@ -567,13 +561,11 @@ __global__ void render_backward_kernel(
             id3 tri = indices[tri_index];
             vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
             vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
-            if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
-                continue;
-            if (bary.x == 0.0f && bary.y == 0.0f && bary.z == 0.0f)
+            if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
                 continue;
 
             scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-            opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
+            opacity = std::clamp(opacity, scalar(0.0), max_opacity);
             color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
             scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);
@@ -632,13 +624,11 @@ __global__ void render_backward_kernel(
                 id3 tri = indices[tri_index];
                 vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
                 vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
-                if (bary.x < 0.0f || bary.y < 0.0f || bary.z < 0.0f)
-                    continue;
-                if (bary.x == 0.0f && bary.y == 0.0f && bary.z == 0.0f)
+                if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
                     continue;
 
                 scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-                opacity = std::clamp(opacity, (scalar)0.0, max_opacity);
+                opacity = std::clamp(opacity, scalar(0.0), max_opacity);
                 color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
                 scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);

@@ -21,6 +21,8 @@ inline constexpr auto torchscalar = torch::kFloat32;
 
 static __device__ inline constexpr scalar max_opacity = 0.9999;
 
+constexpr scalar eff_zero = std::numeric_limits<scalar>::min();
+
 __host__ __device__ inline vec3 operator*(const vec3 &a, const vec3 &b)
 {
 
@@ -325,7 +327,7 @@ __host__ __device__ inline scalar dist(vec3 a, vec3 b)
 {
 
     scalar d = dot(a - b, a - b);
-    if (d < 0)
+    if (d < eff_zero)
 
         return 0.0;
 
