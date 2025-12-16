@@ -260,10 +260,10 @@ __global__ void fill_per_tile_lists_kernel(
                 continue;
             }
 
-            scalar md = 1e30f;
+            scalar md = std::numeric_limits<scalar>::max();
 #pragma unroll
             for (int i = 0; i < n; i++)
-                md = fmin(md, plane_depth(A, B, Cc, poly[i]));
+                md = std::min(md, plane_depth(A, B, Cc, poly[i]));
 
             per_tile_depths[out_i] = md;
         }
@@ -435,8 +435,8 @@ __global__ void render_forward_kernel(
     int start = offsets[tile_index];
     int end = offsets[tile_index + 1];
 
-    vec2 pos = {((scalar)ix + 0.5f) / (scalar)width * 2.0f - 1.0f,
-                ((scalar)iy + 0.5f) / (scalar)height * 2.0f - 1.0f};
+    vec2 pos = {((scalar)ix + 0.5) / (scalar)width * 2.0 - 1.0,
+                ((scalar)iy + 0.5) / (scalar)height * 2.0 - 1.0};
 
     scalar alpha = scalar(1.0);
     color3 total_color = {scalar(0.0), scalar(0.0), scalar(0.0)};
@@ -540,10 +540,10 @@ __global__ void render_backward_kernel(
     int index = iy * width + ix;
     int start = offsets[tile_index];
     int tile_end = offsets[tile_index + 1];
-    int processed_limit = min(ends[index], max_layers);
+    int processed_limit = std::min(ends[index], max_layers);
 
-    vec2 pos = {((scalar)ix + 0.5f) / (scalar)width * 2.0f - 1.0f,
-                ((scalar)iy + 0.5f) / (scalar)height * 2.0f - 1.0f};
+    vec2 pos = {((scalar)ix + 0.5) / (scalar)width * 2.0 - 1.0,
+                ((scalar)iy + 0.5) / (scalar)height * 2.0 - 1.0};
 
     scalar alpha = final_opacities[index];
     vec3 s = {scalar(0.0), scalar(0.0), scalar(0.0)};

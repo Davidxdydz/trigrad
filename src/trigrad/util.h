@@ -262,7 +262,10 @@ interpolate3_backward(scalar d_dinter, vec3 bary, scalar a, scalar b, scalar c, 
 
     scalar nom = component_sum(bary * w * vals);
     scalar denom = component_sum(bary * w);
+    if (denom * denom < eff_zero)
+        return {{0, 0, 0}, 0, 0, 0, {0, 0, 0}};
     scalar inv_denom2 = 1 / (denom * denom);
+
     vec3 dfd = (vals * w * denom - nom * w) * inv_denom2;
     vec3 grad_bary = d_dinter * dfd;
     vec3 grad_vals = d_dinter * bary * w / denom;
@@ -277,6 +280,8 @@ interpolate3_backward(vec3 d_dinter, vec3 bary, vec3 a, vec3 b, vec3 c, vec3 w)
 
     vec3 nom = bary.x * w.x * a + bary.y * w.y * b + bary.z * w.z * c;
     scalar denom = bary.x * w.x + bary.y * w.y + bary.z * w.z;
+    if (denom * denom < eff_zero)
+        return {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
     scalar inv_denom2 = 1.0 / (denom * denom);
 
     vec3 df_dbx = w.x * (a * denom - nom) * inv_denom2;
@@ -310,7 +315,7 @@ interpolate3_backward(vec3 d_dinter, vec3 bary, vec3 a, vec3 b, vec3 c, vec3 w)
 __host__ __device__ inline vec3 mean(const vec3 &a, const vec3 &b, const vec3 &c)
 {
 
-    return (a + b + c) / 3.0f;
+    return (a + b + c) / scalar(3.0);
 }
 
 __device__ inline vec3 normalize(const vec3 &a)
@@ -366,6 +371,10 @@ __host__ __device__ inline std::tuple<vec2, vec2, vec2, vec2> barycentric_backwa
     vec3 l = barycentric(a, b, c, p);
 
     scalar d = a.x * (b.y - c.y) + b.x * (-a.y + c.y) + c.x * (a.y - b.y);
+    if (std::abs(d) < eff_zero)
+    {
+        return {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
+    }
     dbx_da.x = l.x * (-b.y + c.y) / d;
     dby_da.x = (-c.y - l.y * (b.y - c.y) + p.y) / d;
     dbz_da.x = (b.y - l.z * (b.y - c.y) - p.y) / d;
