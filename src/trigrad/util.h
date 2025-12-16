@@ -3,7 +3,7 @@
 #include <torch/extension.h>
 #include <cuda_runtime.h>
 
-#define DOUBLE_PRECISION
+// #define DOUBLE_PRECISION
 
 #ifdef DOUBLE_PRECISION
 using vec4 = double4;
