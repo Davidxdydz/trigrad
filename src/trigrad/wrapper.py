@@ -45,7 +45,8 @@ class Renderer(Function):
         ctx.max_layers = max_layers
         if N < 1:
             ctx.skipped = True
-            image = torch.zeros((height, width, 3), dtype=colors.dtype, device=colors.device)
+            image = torch.zeros((height, width, 4), dtype=colors.dtype, device=colors.device)
+            image[..., 3] = 1.0
             timings = None
             ctx.save_for_backward(vertices, indices, colors, opacities)
         else:

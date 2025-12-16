@@ -544,7 +544,8 @@ __global__ void render_backward_kernel(
     vec2 pos = {((scalar)ix + 0.5) / (scalar)width * 2.0 - 1.0,
                 ((scalar)iy + 0.5) / (scalar)height * 2.0 - 1.0};
 
-    scalar alpha = image[index].a;
+    scalar final_alpha = image[index].a;
+    scalar alpha = final_alpha;
     vec3 s = {scalar(0.0), scalar(0.0), scalar(0.0)};
 
     constexpr const int layers = 32;
@@ -567,7 +568,7 @@ __global__ void render_backward_kernel(
             opacity = std::clamp(opacity, scalar(0.0), max_opacity);
             color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
-            scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb());
+            scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb()) + grad_output[index].a * (-final_alpha / (1 - opacity));
             auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
                 interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
 
@@ -630,7 +631,7 @@ __global__ void render_backward_kernel(
                 opacity = std::clamp(opacity, scalar(0.0), max_opacity);
                 color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
-                scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb());
+                scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb()) + grad_output[index].a * (-final_alpha / (1 - opacity));
                 auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
                     interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
 
