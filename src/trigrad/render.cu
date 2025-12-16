@@ -322,7 +322,7 @@ __global__ void cartesian_to_bary_kernel(
     vec2 c = xy(vertices[i.c]);
     int mid = id * 3 * 3;
     scalar denom = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
-    if (denom == 0)
+    if (std::abs(denom) < eff_zero)
         denom = 1;
 
     output[mid + 0] = (b.y - c.y) / denom;
@@ -478,14 +478,14 @@ __global__ void render_forward_kernel(
 
         while (alpha > early_stopping_threshold && blended_count < max_layers)
         {
-            int batch_size = min(layers, max_layers - blended_count);
+            int batch_size = std::min(layers, max_layers - blended_count);
             int found = select_next_k_in_tile(batch_size, batch_j, batch_depths, lastDepth, lastJ, start, end,
                                               per_tile_list, bary_transforms, vertices, indices, pos);
 
             if (found == 0)
                 break;
 
-            int to_process = min(found, max_layers - blended_count);
+            int to_process = std::min(found, max_layers - blended_count);
 
             for (int i = 0; i < to_process; ++i)
             {
