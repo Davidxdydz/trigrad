@@ -21,6 +21,7 @@ render_backward(
 
 std::tuple<
     torch::Tensor,                // rendered image
+    torch::Tensor,                // depth map
     torch::Tensor,                // sorted ids
     torch::Tensor,                // offsets
     torch::Tensor,                // barycentric transforms

@@ -46,6 +46,7 @@ def depth_overlap():
             [0, -1, -1, 1],
         ],
     )
+    vertices[:, 2] += 1
     indices = torch.tensor(
         [
             [0, 1, 2],

@@ -25,7 +25,7 @@ class Renderer(Function):
         record_timing: bool = False,
         per_pixel_sort: bool = True,
         max_layers: int = 32,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, dict]:
         N, _ = vertices.shape
         check_tensor(vertices, "vertices", (N, 4))
         check_tensor(colors, "colors", (N, 3))
@@ -44,14 +44,16 @@ class Renderer(Function):
         ctx.per_pixel_sort = per_pixel_sort
         ctx.max_layers = max_layers
         if N < 1:
+            # TODO handle this case correctly
             ctx.skipped = True
             image = torch.zeros((height, width, 4), dtype=colors.dtype, device=colors.device)
             image[..., 3] = 1.0
+            depthmap = torch.ones((height, width), dtype=colors.dtype, device=colors.device) * float("inf")
             timings = None
             ctx.save_for_backward(vertices, indices, colors, opacities)
         else:
             ctx.skipped = False
-            image, sorted_ids, offsets, bary_transforms, ends, timings = _C.render_forward(
+            image, depthmap, sorted_ids, offsets, bary_transforms, ends, timings = _C.render_forward(
                 vertices,
                 indices,
                 colors,
@@ -67,20 +69,23 @@ class Renderer(Function):
             )
             ctx.save_for_backward(vertices, indices, colors, opacities, sorted_ids, offsets, bary_transforms, image, ends)
         if record_timing:
-            return image, timings
-        return image
+            return image, depthmap, timings
+        return image, depthmap
 
     @staticmethod
-    def backward(ctx: FunctionCtx, grad_output: torch.Tensor):
-        if ctx.record_timing:
-            grad_output, grad_timings = grad_output
+    def backward(
+        ctx: FunctionCtx,
+        grad_image: torch.Tensor,
+        grad_depthmap: torch.Tensor,
+        grad_timings=None,
+    ):
         if ctx.skipped:
             grad_vertices = torch.zeros_like(ctx.saved_tensors[0])
             grad_colors = torch.zeros_like(ctx.saved_tensors[2])
             grad_opacities = torch.zeros_like(ctx.saved_tensors[3])
         else:
             grad_vertices, grad_colors, grad_opacities = _C.render_backward(
-                grad_output,
+                grad_image,
                 *ctx.saved_tensors,
                 ctx.width,
                 ctx.height,
@@ -131,6 +136,7 @@ def render(
 
     Returns:
         image : (height, width, 4) tensor of rendered image **The alpha channel contains translucency, not opacity, for numerical stability**
+        depthmap : (height, width) tensor of depth values
         timings (optional) : dict of timing information, only if record_timing is True
     """
     if tile_width * tile_height > 1024:
