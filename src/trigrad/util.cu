@@ -78,3 +78,12 @@ const bool *const_bool(torch::Tensor tensor)
 {
     return tensor.const_data_ptr<bool>();
 }
+
+const color4 *const_color4(torch::Tensor tensor)
+{
+    return reinterpret_cast<const color4 *>(tensor.const_data_ptr<scalar>());
+}
+color4 *mutable_color4(torch::Tensor tensor)
+{
+    return reinterpret_cast<color4 *>(tensor.mutable_data_ptr<scalar>());
+}

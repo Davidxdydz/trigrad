@@ -50,7 +50,7 @@ class Renderer(Function):
             ctx.save_for_backward(vertices, indices, colors, opacities)
         else:
             ctx.skipped = False
-            image, *args, timings = _C.render_forward(
+            image, sorted_ids, offsets, bary_transforms, ends, timings = _C.render_forward(
                 vertices,
                 indices,
                 colors,
@@ -64,8 +64,7 @@ class Renderer(Function):
                 per_pixel_sort,
                 max_layers,
             )
-            ctx.save_for_backward(vertices, indices, colors, opacities, *args)
-
+            ctx.save_for_backward(vertices, indices, colors, opacities, sorted_ids, offsets, bary_transforms, image, ends)
         if record_timing:
             return image, timings
         return image
@@ -121,12 +120,17 @@ def render(
     max_layers: int = 32,
 ) -> torch.Tensor | Tuple[torch.Tensor, dict]:
     """
-    vertices : (N, 4) tensor of triangle vertices (x'/w',y'/w',z'/w',1/w') in [-1,1] clip space
-    indices : (M, 3) tensor of triangle vertex indices
-    colors : (N, 3) tensor of triangle vertex colors
-    opacities : (N,) tensor of triangle vertex opacities
-    per_pixel_sort : bool indicating whether to sort fragments per pixel or per tile
-    max_layers : maximum number of layers to composite per pixel, <= 0 for no limit
+    Render semi-transparent triangles using a software rasterizer.
+        vertices : (N, 4) tensor of triangle vertices (x'/w',y'/w',z'/w',1/w') in [-1,1] clip space
+        indices : (M, 3) tensor of triangle vertex indices
+        colors : (N, 3) tensor of triangle vertex colors
+        opacities : (N,) tensor of triangle vertex opacities
+        per_pixel_sort : bool indicating whether to sort fragments per pixel or per tile
+        max_layers : maximum number of layers to composite per pixel, <= 0 for no limit
+
+    Returns:
+        image : (height, width, 4) tensor of rendered image **The alpha channel contains translucency, not opacity, for numerical stability**
+        timings (optional) : dict of timing information, only if record_timing is True
     """
     if tile_width * tile_height > 1024:
         raise ValueError("tile_width * tile_height must be <= 1024")

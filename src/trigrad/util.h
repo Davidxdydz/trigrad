@@ -449,6 +449,51 @@ union color3
     }
 };
 
+union color4
+{
+    vec4 rgba;
+    struct
+    {
+        scalar r, g, b, a;
+    };
+
+    // Default constructor
+    __host__ __device__ color4() : rgba{0.0, 0.0, 0.0, 0.0} {}
+    // Construct from individual components
+    __host__ __device__ color4(scalar red, scalar green, scalar blue, scalar alpha)
+    {
+        rgba = {red, green, blue, alpha};
+    }
+
+    // Construct from CUDA vec4
+    __host__ __device__ color4(const vec4 &v)
+    {
+        rgba = v;
+    }
+
+    // Assignment from vec4
+    __host__ __device__ color4 &operator=(const vec4 &v)
+    {
+        rgba = v;
+        return *this;
+    }
+
+    // Implicit conversion to vec4
+    __host__ __device__ operator vec4() const
+    {
+        return rgba;
+    }
+    __host__ __device__ color4(const color3 &c, scalar alpha)
+    {
+        rgba = {c.r, c.g, c.b, alpha};
+    }
+
+    __host__ __device__ inline color3 rgb() const
+    {
+        return {r, g, b};
+    }
+};
+
 union id3
 {
     int3 abc;
@@ -627,5 +672,7 @@ const int *const_int(torch::Tensor tensor);
 const id4 *const_id4(torch::Tensor tensor);
 const vec4 *const_vec4(torch::Tensor tensor);
 vec4 *mutable_vec4(torch::Tensor tensor);
+const color4 *const_color4(torch::Tensor tensor);
+color4 *mutable_color4(torch::Tensor tensor);
 bool *mutable_bool(torch::Tensor tensor);
 const bool *const_bool(torch::Tensor tensor);

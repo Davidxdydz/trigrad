@@ -415,7 +415,7 @@ __device__ inline int select_next_k_in_tile(
 }
 
 __global__ void render_forward_kernel(
-    color3 *__restrict__ image, scalar *final_opacity, int *__restrict__ ends,
+    color4 *__restrict__ image, int *__restrict__ ends,
     const scalar *bary_transforms,
     const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities,
     const int *__restrict__ per_tile_list, const int *__restrict__ offsets,
@@ -515,14 +515,13 @@ __global__ void render_forward_kernel(
     }
 
     ends[index] = end_out;
-    final_opacity[index] = alpha;
-    image[index] = total_color;
+    image[index] = color4(total_color, alpha);
 }
 
 __global__ void render_backward_kernel(
     vec4 *__restrict__ grad_vertices, color3 *__restrict__ grad_colors, scalar *__restrict__ grad_opacities,
-    const color3 *__restrict__ grad_output,
-    const scalar *__restrict__ final_opacities, const int *__restrict__ ends,
+    const color4 *__restrict__ grad_output,
+    const color4 *__restrict__ image, const int *__restrict__ ends,
     const int *__restrict__ sorted_ids, const int *__restrict__ offsets,
     const scalar *__restrict__ bary_transforms,
     const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities,
@@ -545,7 +544,7 @@ __global__ void render_backward_kernel(
     vec2 pos = {((scalar)ix + 0.5) / (scalar)width * 2.0 - 1.0,
                 ((scalar)iy + 0.5) / (scalar)height * 2.0 - 1.0};
 
-    scalar alpha = final_opacities[index];
+    scalar alpha = image[index].a;
     vec3 s = {scalar(0.0), scalar(0.0), scalar(0.0)};
 
     constexpr const int layers = 32;
@@ -568,7 +567,7 @@ __global__ void render_backward_kernel(
             opacity = std::clamp(opacity, scalar(0.0), max_opacity);
             color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
-            scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);
+            scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb());
             auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
                 interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
 
@@ -579,7 +578,7 @@ __global__ void render_backward_kernel(
             alpha /= (1.0 - opacity);
             s += color * opacity * alpha;
 
-            color3 d_rgb_dc = alpha * opacity * grad_output[index];
+            color3 d_rgb_dc = alpha * opacity * grad_output[index].rgb();
             auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
                 interpolate3_backward(d_rgb_dc, bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
@@ -631,7 +630,7 @@ __global__ void render_backward_kernel(
                 opacity = std::clamp(opacity, scalar(0.0), max_opacity);
                 color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
-                scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index]);
+                scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb());
                 auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
                     interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
 
@@ -642,7 +641,7 @@ __global__ void render_backward_kernel(
                 alpha /= (1.0 - opacity);
                 s += color * opacity * alpha;
 
-                color3 d_rgb_dc = alpha * opacity * grad_output[index];
+                color3 d_rgb_dc = alpha * opacity * grad_output[index].rgb();
                 auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
                     interpolate3_backward(d_rgb_dc, bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
 
@@ -686,7 +685,7 @@ torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices)
     return output;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::map<std::string, float>> render_forward(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::map<std::string, float>> render_forward(
     torch::Tensor vertices, torch::Tensor indices, torch::Tensor colors, torch::Tensor opacities, // input: vertices, indices, colors and opacities
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
@@ -701,9 +700,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     indices = indices.contiguous();
     colors = colors.contiguous();
     opacities = opacities.contiguous();
-    auto image = torch::zeros({height, width, 3}, torch::TensorOptions(torchscalar).device(torch::kCUDA));
+    auto image = torch::zeros({height, width, 4}, torch::TensorOptions(torchscalar).device(torch::kCUDA));
     auto ends = torch::zeros({height, width}, torch::TensorOptions(torch::kInt32).device(torch::kCUDA));
-    auto final_opacity = torch::zeros({height, width}, torch::TensorOptions(torchscalar).device(torch::kCUDA));
 
     timer.start("per_tile_lists");
     auto [ids, per_tile_depths, offsets] = per_tile_lists(vertices, indices, width, height, tile_width, tile_height);
@@ -723,7 +721,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     const dim3 threads_per_block(tile_width, tile_height);
     const dim3 blocks((width + threads_per_block.x - 1) / threads_per_block.x, (height + threads_per_block.y - 1) / threads_per_block.y);
     render_forward_kernel<<<blocks, threads_per_block>>>(
-        mutable_color3(image), mutable_scalar(final_opacity), mutable_int(ends),
+        mutable_color4(image), mutable_int(ends),
         const_scalar(bary_transforms),
         const_vec4(vertices),
         const_id3(indices), const_color3(colors), const_scalar(opacities),
@@ -731,7 +729,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
         width, height,
         early_stopping_threshold, per_pixel_sort, max_layers);
     timer.stop();
-    return {image, ids, offsets, bary_transforms, final_opacity, ends, timings};
+    return {image, ids, offsets, bary_transforms, ends, timings};
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
@@ -739,7 +737,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     torch::Tensor vertices, torch::Tensor indices, torch::Tensor colors, torch::Tensor opacities, // triangle data
     torch::Tensor sorted_ids, torch::Tensor offsets,                                              // ids and offsets for sorted rendering
     torch::Tensor bary_transforms,                                                                // cartesian to barycentric transformation matrices
-    torch::Tensor final_opacities, torch::Tensor ends,                                            // final opacities and indices
+    torch::Tensor image, torch::Tensor ends,                                                      // final opacities and indices
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
     const scalar early_stopping_threshold,                                                        // remaining opacity at which to stop rendering
@@ -752,7 +750,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     bary_transforms = bary_transforms.contiguous();
     sorted_ids = sorted_ids.contiguous();
     offsets = offsets.contiguous();
-    final_opacities = final_opacities.contiguous();
+    image = image.contiguous();
     grad_output = grad_output.contiguous();
     ends = ends.contiguous();
     auto grad_vertices = torch::zeros_like(vertices);
@@ -762,8 +760,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     const dim3 blocks((width + threads_per_block.x - 1) / threads_per_block.x, (height + threads_per_block.y - 1) / threads_per_block.y);
     render_backward_kernel<<<blocks, threads_per_block>>>(
         mutable_vec4(grad_vertices), mutable_color3(grad_colors), mutable_scalar(grad_opacities),
-        const_color3(grad_output),
-        const_scalar(final_opacities), const_int(ends),
+        const_color4(grad_output),
+        const_color4(image), const_int(ends),
         const_int(sorted_ids), const_int(offsets),
         const_scalar(bary_transforms),
         const_vec4(vertices), const_id3(indices), const_color3(colors), const_scalar(opacities),
