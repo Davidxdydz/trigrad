@@ -414,6 +414,104 @@ __device__ inline int select_next_k_in_tile(
     return topk_idx;
 }
 
+__device__ inline void process_forward(
+    int j,
+    const int *__restrict__ per_tile_list,
+    const scalar *__restrict__ bary_transforms,
+    const vec4 *__restrict__ vertices,
+    const id3 *__restrict__ indices,
+    const color3 *__restrict__ colors,
+    const scalar *__restrict__ opacities,
+    const vec2 pos,
+    scalar &alpha,
+    color3 &total_color,
+    scalar &total_depth,
+    scalar &total_weight,
+    int &end_out,
+    int &blended_count)
+{
+    int tri_lookup = per_tile_list[j];
+    id3 tri = indices[tri_lookup];
+    vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
+    vec3 bary = apply_cart_to_bary(&bary_transforms[tri_lookup * 9], pos);
+
+    if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
+        return;
+
+    scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
+    opacity = std::clamp(opacity, scalar(0.0), max_opacity);
+    color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
+    scalar depth = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
+    total_depth = total_depth + alpha * opacity * depth;
+    total_weight = total_weight + alpha * opacity;
+    total_color = total_color + alpha * opacity * color;
+    alpha *= (1 - opacity);
+
+    end_out++;
+    blended_count++;
+}
+
+__device__ inline void process_backward(
+    int j,
+    const int *__restrict__ sorted_ids,
+    const scalar *__restrict__ bary_transforms,
+    const vec4 *__restrict__ vertices,
+    const id3 *__restrict__ indices,
+    const color3 *__restrict__ colors,
+    const scalar *__restrict__ opacities,
+    const vec2 pos,
+    const color4 *__restrict__ grad_output,
+    int index,
+    scalar final_alpha,
+    scalar &alpha,
+    vec3 &s,
+    vec4 *__restrict__ grad_vertices,
+    color3 *__restrict__ grad_colors,
+    scalar *__restrict__ grad_opacities)
+{
+    int tri_index = sorted_ids[j];
+    id3 tri = indices[tri_index];
+    vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
+    vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
+    if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
+        return;
+
+    scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
+    opacity = std::clamp(opacity, scalar(0.0), max_opacity);
+    color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
+
+    scalar drgb_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb()) + grad_output[index].a * (-final_alpha / (1 - opacity));
+    auto [drgb_do_do_dbary, drgb_do1, drgb_do2, drgb_do3, drgb_do_do_dw] =
+        interpolate3_backward(drgb_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
+
+    atomicAdd(&grad_opacities[tri.a], drgb_do1);
+    atomicAdd(&grad_opacities[tri.b], drgb_do2);
+    atomicAdd(&grad_opacities[tri.c], drgb_do3);
+
+    alpha /= (1.0 - opacity);
+    s += color * opacity * alpha;
+
+    color3 drgb_dc = alpha * opacity * grad_output[index].rgb();
+    auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
+        interpolate3_backward(drgb_dc, bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
+
+    atomicAdd3(&grad_colors[tri.a], drgb_dc1);
+    atomicAdd3(&grad_colors[tri.b], drgb_dc2);
+    atomicAdd3(&grad_colors[tri.c], drgb_dc3);
+
+    vec3 drgb_dbary = drgb_do_do_dbary + drgb_dc_dc_dbary;
+    auto [drgb_dva_xy, drgb_dvb_xy, drgb_dvc_xy, drgb_dp] =
+        barycentric_backward(drgb_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
+    vec3 drgb_dw = drgb_do_do_dw + drgb_dc_dc_dw;
+    vec4 drgb_dva = {drgb_dva_xy.x, drgb_dva_xy.y, 0, drgb_dw.x};
+    vec4 drgb_dvb = {drgb_dvb_xy.x, drgb_dvb_xy.y, 0, drgb_dw.y};
+    vec4 drgb_dvc = {drgb_dvc_xy.x, drgb_dvc_xy.y, 0, drgb_dw.z};
+
+    atomicAdd4(&grad_vertices[tri.a], drgb_dva);
+    atomicAdd4(&grad_vertices[tri.b], drgb_dvb);
+    atomicAdd4(&grad_vertices[tri.c], drgb_dvc);
+}
+
 __global__ void render_forward_kernel(
     color4 *__restrict__ image, scalar *__restrict__ depthmap, int *__restrict__ ends,
     const scalar *bary_transforms,
@@ -454,25 +552,7 @@ __global__ void render_forward_kernel(
     {
         for (int j = start; j < end && alpha > early_stopping_threshold && blended_count < max_layers; ++j)
         {
-            int tri_lookup = per_tile_list[j];
-            id3 tri = indices[tri_lookup];
-            vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
-            vec3 bary = apply_cart_to_bary(&bary_transforms[tri_lookup * 9], pos);
-
-            if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
-                continue;
-
-            scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-            opacity = std::clamp(opacity, scalar(0.0), max_opacity);
-            color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-            scalar depth = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
-            total_depth = total_depth + alpha * opacity * depth;
-            total_weight = total_weight + alpha * opacity;
-            total_color = total_color + alpha * opacity * color;
-            alpha *= (1 - opacity);
-
-            end_out++;
-            blended_count++;
+            process_forward(j, per_tile_list, bary_transforms, vertices, indices, colors, opacities, pos, alpha, total_color, total_depth, total_weight, end_out, blended_count);
         }
     }
     else
@@ -494,25 +574,7 @@ __global__ void render_forward_kernel(
             for (int i = 0; i < to_process; ++i)
             {
                 int j = batch_j[i];
-                int tri_lookup = per_tile_list[j];
-                id3 tri = indices[tri_lookup];
-                vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
-                vec3 bary = apply_cart_to_bary(&bary_transforms[tri_lookup * 9], pos);
-
-                if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
-                    continue;
-
-                scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-                opacity = std::clamp(opacity, scalar(0.0), max_opacity);
-                color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-                scalar depth = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
-                total_depth = total_depth + alpha * opacity * depth;
-                total_weight = total_weight + alpha * opacity;
-                total_color = total_color + alpha * opacity * color;
-                alpha *= (1 - opacity);
-
-                end_out++;
-                blended_count++;
+                process_forward(j, per_tile_list, bary_transforms, vertices, indices, colors, opacities, pos, alpha, total_color, total_depth, total_weight, end_out, blended_count);
             }
 
             lastDepth = batch_depths[to_process - 1];
@@ -566,47 +628,7 @@ __global__ void render_backward_kernel(
         for (int i = 0; i < processed_limit; ++i)
         {
             int j = start + i;
-            int tri_index = sorted_ids[j];
-            id3 tri = indices[tri_index];
-            vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
-            vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
-            if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
-                continue;
-
-            scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-            opacity = std::clamp(opacity, scalar(0.0), max_opacity);
-            color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-
-            scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb()) + grad_output[index].a * (-final_alpha / (1 - opacity));
-            auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
-                interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-
-            atomicAdd(&grad_opacities[tri.a], d_do1);
-            atomicAdd(&grad_opacities[tri.b], d_do2);
-            atomicAdd(&grad_opacities[tri.c], d_do3);
-
-            alpha /= (1.0 - opacity);
-            s += color * opacity * alpha;
-
-            color3 d_rgb_dc = alpha * opacity * grad_output[index].rgb();
-            auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
-                interpolate3_backward(d_rgb_dc, bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-
-            atomicAdd3(&grad_colors[tri.a], drgb_dc1);
-            atomicAdd3(&grad_colors[tri.b], drgb_dc2);
-            atomicAdd3(&grad_colors[tri.c], drgb_dc3);
-
-            vec3 d_dbary = d_do_do_dbary + drgb_dc_dc_dbary;
-            auto [d_dva_xy, d_dvb_xy, d_dvc_xy, d_dp] =
-                barycentric_backward(d_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
-            vec3 d_dw = d_do_do_dw + drgb_dc_dc_dw;
-            vec4 d_dva = {d_dva_xy.x, d_dva_xy.y, 0, d_dw.x};
-            vec4 d_dvb = {d_dvb_xy.x, d_dvb_xy.y, 0, d_dw.y};
-            vec4 d_dvc = {d_dvc_xy.x, d_dvc_xy.y, 0, d_dw.z};
-
-            atomicAdd4(&grad_vertices[tri.a], d_dva);
-            atomicAdd4(&grad_vertices[tri.b], d_dvb);
-            atomicAdd4(&grad_vertices[tri.c], d_dvc);
+            process_backward(j, sorted_ids, bary_transforms, vertices, indices, colors, opacities, pos, grad_output, index, final_alpha, alpha, s, grad_vertices, grad_colors, grad_opacities);
         }
     }
     else
@@ -629,47 +651,7 @@ __global__ void render_backward_kernel(
             for (int idx = to_process - 1; idx >= 0; --idx)
             {
                 int k = batch_j[idx];
-                int tri_index = sorted_ids[k];
-                id3 tri = indices[tri_index];
-                vec3 ws = {vertices[tri.a].w, vertices[tri.b].w, vertices[tri.c].w};
-                vec3 bary = apply_cart_to_bary(&bary_transforms[tri_index * 9], pos);
-                if (bary.x < eff_zero || bary.y < eff_zero || bary.z < eff_zero)
-                    continue;
-
-                scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-                opacity = std::clamp(opacity, scalar(0.0), max_opacity);
-                color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-
-                scalar d_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb()) + grad_output[index].a * (-final_alpha / (1 - opacity));
-                auto [d_do_do_dbary, d_do1, d_do2, d_do3, d_do_do_dw] =
-                    interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
-
-                atomicAdd(&grad_opacities[tri.a], d_do1);
-                atomicAdd(&grad_opacities[tri.b], d_do2);
-                atomicAdd(&grad_opacities[tri.c], d_do3);
-
-                alpha /= (1.0 - opacity);
-                s += color * opacity * alpha;
-
-                color3 d_rgb_dc = alpha * opacity * grad_output[index].rgb();
-                auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
-                    interpolate3_backward(d_rgb_dc, bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-
-                atomicAdd3(&grad_colors[tri.a], drgb_dc1);
-                atomicAdd3(&grad_colors[tri.b], drgb_dc2);
-                atomicAdd3(&grad_colors[tri.c], drgb_dc3);
-
-                vec3 d_dbary = d_do_do_dbary + drgb_dc_dc_dbary;
-                auto [d_dva_xy, d_dvb_xy, d_dvc_xy, d_dp] =
-                    barycentric_backward(d_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
-                vec3 d_dw = d_do_do_dw + drgb_dc_dc_dw;
-                vec4 d_dva = {d_dva_xy.x, d_dva_xy.y, 0, d_dw.x};
-                vec4 d_dvb = {d_dvb_xy.x, d_dvb_xy.y, 0, d_dw.y};
-                vec4 d_dvc = {d_dvc_xy.x, d_dvc_xy.y, 0, d_dw.z};
-
-                atomicAdd4(&grad_vertices[tri.a], d_dva);
-                atomicAdd4(&grad_vertices[tri.b], d_dvb);
-                atomicAdd4(&grad_vertices[tri.c], d_dvc);
+                process_backward(k, sorted_ids, bary_transforms, vertices, indices, colors, opacities, pos, grad_output, index, final_alpha, alpha, s, grad_vertices, grad_colors, grad_opacities);
             }
 
             lastDepth = batch_depths[to_process - 1];
