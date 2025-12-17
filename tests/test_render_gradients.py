@@ -9,12 +9,12 @@ torch.set_default_device("cuda")
 torch.set_default_dtype(trigrad.precision)
 
 
-def test_dc():
+def test_drgb_dc():
     vertices, indices, colors = overlapping_squares(10)
     opacities = torch.full_like(vertices[:, 0], 0.99)
     colors.requires_grad_()
     assert gradcheck(
-        trigrad.render,
+        lambda *args: trigrad.render(*args)[0],
         (
             vertices,
             indices,
@@ -29,12 +29,32 @@ def test_dc():
     )
 
 
-def test_do():
+def test_dd_dc():
+    vertices, indices, colors = large_trianlges(3, r=4, unicolor=False)
+    opacities = torch.full_like(vertices[:, 0], 0.99)
+    colors.requires_grad_()
+    assert gradcheck(
+        lambda *args: trigrad.render(*args)[1],
+        (
+            vertices,
+            indices,
+            colors,
+            opacities,
+            50,
+            50,
+            tile_size,
+            tile_size,
+            1 / 256,
+        ),
+    )
+
+
+def test_drgb_do():
     vertices, indices, colors = overlapping_squares(10)
     opacities = torch.full_like(vertices[:, 0], 0.99)
     opacities.requires_grad_()
     assert gradcheck(
-        trigrad.render,
+        lambda *args: trigrad.render(*args)[0],
         (
             vertices,
             indices,
@@ -49,12 +69,32 @@ def test_do():
     )
 
 
-def test_dv():
+def test_dd_do():
+    vertices, indices, colors = large_trianlges(3, r=4, unicolor=False)
+    opacities = torch.full_like(vertices[:, 0], 0.99)
+    opacities.requires_grad_()
+    assert gradcheck(
+        lambda *args: trigrad.render(*args)[1],
+        (
+            vertices,
+            indices,
+            colors,
+            opacities,
+            50,
+            50,
+            tile_size,
+            tile_size,
+            1 / 256,
+        ),
+    )
+
+
+def test_drgb_dv():
     vertices, indices, colors = large_trianlges(3, r=4, unicolor=False)
     opacities = torch.full_like(vertices[:, 0], 0.99)
     vertices.requires_grad_()
     assert gradcheck(
-        trigrad.render,
+        lambda *args: trigrad.render(*args)[0],
         (
             vertices,
             indices,
@@ -69,14 +109,56 @@ def test_dv():
     )
 
 
-def test_dall():
+def test_dd_dv():
+    vertices, indices, colors = large_trianlges(3, r=4, unicolor=False)
+    opacities = torch.full_like(vertices[:, 0], 0.99)
+    vertices.requires_grad_()
+    assert gradcheck(
+        lambda *args: trigrad.render(*args)[1],
+        (
+            vertices,
+            indices,
+            colors,
+            opacities,
+            50,
+            50,
+            tile_size,
+            tile_size,
+            1 / 256,
+        ),
+    )
+
+
+def test_drgb_dall():
     vertices, indices, colors = large_trianlges(3, r=4, unicolor=False)
     opacities = torch.full_like(vertices[:, 0], 0.99)
     vertices.requires_grad_()
     colors.requires_grad_()
     opacities.requires_grad_()
     assert gradcheck(
-        trigrad.render,
+        lambda *args: trigrad.render(*args)[0],
+        (
+            vertices,
+            indices,
+            colors,
+            opacities,
+            50,
+            50,
+            tile_size,
+            tile_size,
+            1 / 256,
+        ),
+    )
+
+
+def test_dd_dall():
+    vertices, indices, colors = large_trianlges(3, r=4, unicolor=False)
+    opacities = torch.full_like(vertices[:, 0], 0.99)
+    vertices.requires_grad_()
+    colors.requires_grad_()
+    opacities.requires_grad_()
+    assert gradcheck(
+        lambda *args: trigrad.render(*args)[1],
         (
             vertices,
             indices,
