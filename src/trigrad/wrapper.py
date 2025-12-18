@@ -53,7 +53,7 @@ class Renderer(Function):
             ctx.save_for_backward(vertices, indices, colors, opacities)
         else:
             ctx.skipped = False
-            image, depthmap, sorted_ids, offsets, bary_transforms, ends, timings = _C.render_forward(
+            image, depthmap, final_weights, sorted_ids, offsets, bary_transforms, ends, timings = _C.render_forward(
                 vertices,
                 indices,
                 colors,
@@ -67,7 +67,7 @@ class Renderer(Function):
                 per_pixel_sort,
                 max_layers,
             )
-            ctx.save_for_backward(vertices, indices, colors, opacities, sorted_ids, offsets, bary_transforms, image, ends)
+            ctx.save_for_backward(vertices, indices, colors, opacities, sorted_ids, offsets, bary_transforms, image, depthmap, final_weights, ends)
         if record_timing:
             return image, depthmap, timings
         return image, depthmap
@@ -86,6 +86,7 @@ class Renderer(Function):
         else:
             grad_vertices, grad_colors, grad_opacities = _C.render_backward(
                 grad_image,
+                grad_depthmap,
                 *ctx.saved_tensors,
                 ctx.width,
                 ctx.height,

@@ -171,7 +171,7 @@ def grid_mesh(nx, ny, minx=-1, maxx=1, miny=-1, maxy=1):
                 if ix == nx - 1:
                     break
                 x = minx + step_x / 2 + ix * step_x
-            vertices.append([x, y, 0])
+            vertices.append([x, y, 1])
             n = len(vertices) - 1
             # up and right triangle
             if iy < ny - 1 and ((ix < nx - 2) or (ix < nx - 1 and iy % 2 == 0)) and iy < ny - 1:

@@ -461,13 +461,18 @@ __device__ inline void process_backward(
     const scalar *__restrict__ opacities,
     const vec2 pos,
     const color4 *__restrict__ grad_output,
+    const scalar *__restrict__ grad_depthmap,
     int index,
     scalar final_alpha,
     scalar &alpha,
     vec3 &s,
     vec4 *__restrict__ grad_vertices,
     color3 *__restrict__ grad_colors,
-    scalar *__restrict__ grad_opacities)
+    scalar *__restrict__ grad_opacities,
+    scalar &oa,  // sum_{i=k+1}^n o_i * alpha_i
+    scalar &zoa, // sum_{i=k+1}^n z_i * o_i * alpha_i
+    scalar final_weight,
+    scalar final_depth)
 {
     int tri_index = sorted_ids[j];
     id3 tri = indices[tri_index];
@@ -479,17 +484,26 @@ __device__ inline void process_backward(
     scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
     opacity = std::clamp(opacity, scalar(0.0), max_opacity);
     color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
+    scalar z = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
 
     scalar drgb_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb()) + grad_output[index].a * (-final_alpha / (1 - opacity));
-    auto [drgb_do_do_dbary, drgb_do1, drgb_do2, drgb_do3, drgb_do_do_dw] =
-        interpolate3_backward(drgb_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
+    alpha /= (scalar(1.0) - opacity);
+    s += color * opacity * alpha;
+    scalar ddw_do = alpha - oa / (scalar(1.0) - opacity);      // d total depth weight / d opacity
+    scalar dud_do = alpha * z - zoa / (scalar(1.0) - opacity); // d unnormalized depth / d opacity
+    oa = oa + opacity * alpha;
+    zoa = zoa + z * opacity * alpha;
+
+    scalar dd_do = (dud_do - final_depth * ddw_do) / final_weight * grad_depthmap[index];
+    if (final_weight < eff_zero)
+        dd_do = scalar(0.0);
+    scalar d_do = drgb_do + dd_do;
+    auto [d_do_do_dbary, drgb_do1, drgb_do2, drgb_do3, drgb_do_do_dw] =
+        interpolate3_backward(d_do, bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
 
     atomicAdd(&grad_opacities[tri.a], drgb_do1);
     atomicAdd(&grad_opacities[tri.b], drgb_do2);
     atomicAdd(&grad_opacities[tri.c], drgb_do3);
-
-    alpha /= (1.0 - opacity);
-    s += color * opacity * alpha;
 
     color3 drgb_dc = alpha * opacity * grad_output[index].rgb();
     auto [drgb_dc_dc_dbary, drgb_dc1, drgb_dc2, drgb_dc3, drgb_dc_dc_dw] =
@@ -498,14 +512,19 @@ __device__ inline void process_backward(
     atomicAdd3(&grad_colors[tri.a], drgb_dc1);
     atomicAdd3(&grad_colors[tri.b], drgb_dc2);
     atomicAdd3(&grad_colors[tri.c], drgb_dc3);
+    scalar dd_dz = alpha * opacity * grad_depthmap[index] / final_weight;
+    if (final_weight < eff_zero)
+        dd_dz = scalar(0.0);
+    auto [dd_dz_dz_dbary, dd_dza, dd_dzb, dd_dzc, dd_dz_dz_dw] =
+        interpolate3_backward(dd_dz, bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
 
-    vec3 drgb_dbary = drgb_do_do_dbary + drgb_dc_dc_dbary;
+    vec3 d_dbary = d_do_do_dbary + drgb_dc_dc_dbary + dd_dz_dz_dbary;
     auto [drgb_dva_xy, drgb_dvb_xy, drgb_dvc_xy, drgb_dp] =
-        barycentric_backward(drgb_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
-    vec3 drgb_dw = drgb_do_do_dw + drgb_dc_dc_dw;
-    vec4 drgb_dva = {drgb_dva_xy.x, drgb_dva_xy.y, 0, drgb_dw.x};
-    vec4 drgb_dvb = {drgb_dvb_xy.x, drgb_dvb_xy.y, 0, drgb_dw.y};
-    vec4 drgb_dvc = {drgb_dvc_xy.x, drgb_dvc_xy.y, 0, drgb_dw.z};
+        barycentric_backward(d_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
+    vec3 drgb_dw = drgb_do_do_dw + drgb_dc_dc_dw + dd_dz_dz_dw;
+    vec4 drgb_dva = {drgb_dva_xy.x, drgb_dva_xy.y, dd_dza, drgb_dw.x};
+    vec4 drgb_dvb = {drgb_dvb_xy.x, drgb_dvb_xy.y, dd_dzb, drgb_dw.y};
+    vec4 drgb_dvc = {drgb_dvc_xy.x, drgb_dvc_xy.y, dd_dzc, drgb_dw.z};
 
     atomicAdd4(&grad_vertices[tri.a], drgb_dva);
     atomicAdd4(&grad_vertices[tri.b], drgb_dvb);
@@ -513,7 +532,7 @@ __device__ inline void process_backward(
 }
 
 __global__ void render_forward_kernel(
-    color4 *__restrict__ image, scalar *__restrict__ depthmap, int *__restrict__ ends,
+    color4 *__restrict__ image, scalar *__restrict__ depthmap, scalar *__restrict__ final_weights, int *__restrict__ ends,
     const scalar *bary_transforms,
     const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities,
     const int *__restrict__ per_tile_list, const int *__restrict__ offsets,
@@ -584,15 +603,19 @@ __global__ void render_forward_kernel(
     if (total_weight > eff_zero)
         depthmap[index] = total_depth / total_weight;
     else
+    {
         depthmap[index] = std::numeric_limits<scalar>::infinity();
+        total_weight = scalar(0.0);
+    }
+    final_weights[index] = total_weight;
     ends[index] = end_out;
     image[index] = color4(total_color, alpha);
 }
 
 __global__ void render_backward_kernel(
     vec4 *__restrict__ grad_vertices, color3 *__restrict__ grad_colors, scalar *__restrict__ grad_opacities,
-    const color4 *__restrict__ grad_output,
-    const color4 *__restrict__ image, const int *__restrict__ ends,
+    const color4 *__restrict__ grad_output, const scalar *__restrict__ grad_depthmap,
+    const color4 *__restrict__ image, const scalar *__restrict__ depthmap, const scalar *__restrict__ final_weights, const int *__restrict__ ends,
     const int *__restrict__ sorted_ids, const int *__restrict__ offsets,
     const scalar *__restrict__ bary_transforms,
     const vec4 *__restrict__ vertices, const id3 *__restrict__ indices, const color3 *__restrict__ colors, const scalar *__restrict__ opacities,
@@ -618,6 +641,10 @@ __global__ void render_backward_kernel(
     scalar final_alpha = image[index].a;
     scalar alpha = final_alpha;
     vec3 s = {scalar(0.0), scalar(0.0), scalar(0.0)};
+    scalar final_weight = final_weights[index];
+    scalar final_depth = depthmap[index];
+    scalar oa = scalar(0.0);
+    scalar zoa = scalar(0.0);
 
     constexpr const int layers = 32;
     int batch_j[layers];
@@ -628,7 +655,7 @@ __global__ void render_backward_kernel(
         for (int i = 0; i < processed_limit; ++i)
         {
             int j = start + i;
-            process_backward(j, sorted_ids, bary_transforms, vertices, indices, colors, opacities, pos, grad_output, index, final_alpha, alpha, s, grad_vertices, grad_colors, grad_opacities);
+            process_backward(j, sorted_ids, bary_transforms, vertices, indices, colors, opacities, pos, grad_output, grad_depthmap, index, final_alpha, alpha, s, grad_vertices, grad_colors, grad_opacities, oa, zoa, final_weight, final_depth);
         }
     }
     else
@@ -651,7 +678,7 @@ __global__ void render_backward_kernel(
             for (int idx = to_process - 1; idx >= 0; --idx)
             {
                 int k = batch_j[idx];
-                process_backward(k, sorted_ids, bary_transforms, vertices, indices, colors, opacities, pos, grad_output, index, final_alpha, alpha, s, grad_vertices, grad_colors, grad_opacities);
+                process_backward(k, sorted_ids, bary_transforms, vertices, indices, colors, opacities, pos, grad_output, grad_depthmap, index, final_alpha, alpha, s, grad_vertices, grad_colors, grad_opacities, oa, zoa, final_weight, final_depth);
             }
 
             lastDepth = batch_depths[to_process - 1];
@@ -677,7 +704,7 @@ torch::Tensor cartesian_to_bary(torch::Tensor vertices, torch::Tensor indices)
     return output;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::map<std::string, float>> render_forward(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::map<std::string, float>> render_forward(
     torch::Tensor vertices, torch::Tensor indices, torch::Tensor colors, torch::Tensor opacities, // input: vertices, indices, colors and opacities
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
@@ -694,6 +721,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     opacities = opacities.contiguous();
     auto image = torch::zeros({height, width, 4}, torch::TensorOptions(torchscalar).device(torch::kCUDA));
     auto depthmap = torch::zeros({height, width}, torch::TensorOptions(torchscalar).device(torch::kCUDA));
+    auto final_weights = torch::zeros({height, width}, torch::TensorOptions(torchscalar).device(torch::kCUDA));
     auto ends = torch::zeros({height, width}, torch::TensorOptions(torch::kInt32).device(torch::kCUDA));
 
     timer.start("per_tile_lists");
@@ -716,6 +744,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     render_forward_kernel<<<blocks, threads_per_block>>>(
         mutable_color4(image),
         mutable_scalar(depthmap),
+        mutable_scalar(final_weights),
         mutable_int(ends),
         const_scalar(bary_transforms),
         const_vec4(vertices),
@@ -724,15 +753,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
         width, height,
         early_stopping_threshold, per_pixel_sort, max_layers);
     timer.stop();
-    return {image, depthmap, ids, offsets, bary_transforms, ends, timings};
+    return {image, depthmap, final_weights, ids, offsets, bary_transforms, ends, timings};
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
-    torch::Tensor grad_output,                                                                    // upstream gradient
+    torch::Tensor grad_output, torch::Tensor grad_depthmap,                                       // upstream gradient
     torch::Tensor vertices, torch::Tensor indices, torch::Tensor colors, torch::Tensor opacities, // triangle data
     torch::Tensor sorted_ids, torch::Tensor offsets,                                              // ids and offsets for sorted rendering
     torch::Tensor bary_transforms,                                                                // cartesian to barycentric transformation matrices
-    torch::Tensor image, torch::Tensor ends,                                                      // final opacities and indices
+    torch::Tensor image, torch::Tensor depthmap, torch::Tensor final_weights, torch::Tensor ends, // final opacities and indices
     int width, int height,                                                                        // image size
     const int tile_width, const int tile_height,                                                  // tile size
     const scalar early_stopping_threshold,                                                        // remaining opacity at which to stop rendering
@@ -746,6 +775,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     sorted_ids = sorted_ids.contiguous();
     offsets = offsets.contiguous();
     image = image.contiguous();
+    depthmap = depthmap.contiguous();
+    final_weights = final_weights.contiguous();
+    grad_depthmap = grad_depthmap.contiguous();
     grad_output = grad_output.contiguous();
     ends = ends.contiguous();
     auto grad_vertices = torch::zeros_like(vertices);
@@ -755,8 +787,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> render_backward(
     const dim3 blocks((width + threads_per_block.x - 1) / threads_per_block.x, (height + threads_per_block.y - 1) / threads_per_block.y);
     render_backward_kernel<<<blocks, threads_per_block>>>(
         mutable_vec4(grad_vertices), mutable_color3(grad_colors), mutable_scalar(grad_opacities),
-        const_color4(grad_output),
-        const_color4(image), const_int(ends),
+        const_color4(grad_output), const_scalar(grad_depthmap),
+        const_color4(image), const_scalar(depthmap), const_scalar(final_weights), const_int(ends),
         const_int(sorted_ids), const_int(offsets),
         const_scalar(bary_transforms),
         const_vec4(vertices), const_id3(indices), const_color3(colors), const_scalar(opacities),
