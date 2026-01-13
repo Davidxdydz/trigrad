@@ -4,7 +4,8 @@ import torch
 
 def add_w(vertices):
     N = vertices.shape[0]
-    w = torch.ones((N, 1), device=vertices.device, dtype=vertices.dtype)
+    # w = torch.ones((N, 1), device=vertices.device, dtype=vertices.dtype)
+    w = 1 / vertices[:, 2:3].clone()
     return torch.cat([vertices, w], dim=1)
 
 
@@ -16,10 +17,10 @@ def overlapping_squares(N, mins=0.1, maxs=0.9):
     for i, s in enumerate(sizes):
         s = s / 2
         f = 1.00001
-        vertices.append([-f * s, -s, i])
-        vertices.append([f * s, -s, i])
-        vertices.append([f * s, s, i])
-        vertices.append([-f * s, s, i])
+        vertices.append([-f * s, -s, i + 1])
+        vertices.append([f * s, -s, i + 1])
+        vertices.append([f * s, s, i + 1])
+        vertices.append([-f * s, s, i + 1])
         a, b, c, d = i * 4, i * 4 + 1, i * 4 + 2, i * 4 + 3
         indices.append([a, b, c])
         indices.append([a, c, d])
@@ -38,12 +39,12 @@ def overlapping_squares(N, mins=0.1, maxs=0.9):
 def depth_overlap():
     vertices = torch.tensor(
         [
-            [-1.0, -1, 0, 1],
-            [1, -1, 0, 1],
-            [0, 1, -1, 1],
-            [-1, 1, 0, 1],
-            [1, 1, 0, 1],
-            [0, -1, -1, 1],
+            [-1.0, -1, 2],
+            [1, -1, 2],
+            [0, 1, 1],
+            [-1, 1, 2],
+            [1, 1, 2],
+            [0, -1, 1],
         ],
     )
     vertices[:, 2] += 1
@@ -65,6 +66,7 @@ def depth_overlap():
         ],
     )
     opacities = torch.ones(vertices.shape[0])
+    vertices = add_w(vertices)
     return vertices, indices, colors, opacities
 
 
@@ -74,13 +76,13 @@ def large_trianlges(N, r=0.5, unicolor=False):
     colors = []
     for i in range(N):
         angle = (torch.rand((1,)) * 2 * torch.pi).item()
-        vertices.append([np.cos(angle) * r, np.sin(angle) * r, i])
-        vertices.append([np.cos(angle + 2 * np.pi / 3) * r, np.sin(angle + 2 * np.pi / 3) * r, i])
+        vertices.append([np.cos(angle) * r, np.sin(angle) * r, i + 1])
+        vertices.append([np.cos(angle + 2 * np.pi / 3) * r, np.sin(angle + 2 * np.pi / 3) * r, i + 1])
         vertices.append(
             [
                 np.cos(angle + 2 * 2 * np.pi / 3) * r,
                 np.sin(angle + 2 * 2 * np.pi / 3) * r,
-                i,
+                i + 1,
             ]
         )
         indices.append([i * 3, i * 3 + 1, i * 3 + 2])
@@ -103,14 +105,15 @@ def large_trianlges(N, r=0.5, unicolor=False):
 def overlapping_triangles():
     vertices = torch.tensor(
         [
-            [0.1, 0.1, 0],
-            [0.1, 0.9, 0],
-            [0.75, 0.5, 0],
-            [0.9, 0.1, 1],
-            [0.9, 0.9, 1],
-            [0.25, 0.5, 1],
+            [0.1, 0.1, 1],
+            [0.1, 0.9, 1],
+            [0.75, 0.5, 1],
+            [0.9, 0.1, 2],
+            [0.9, 0.9, 2],
+            [0.25, 0.5, 2],
         ],
     )
+    vertices[:, :2] = vertices[:, :2] * 2 - 1
     indices = torch.tensor(
         [
             [0, 1, 2],
@@ -128,18 +131,22 @@ def overlapping_triangles():
             [0, 0, 1],
         ],
     )
-    vertices = add_w(vertices) * 2 - 1
+    vertices = add_w(vertices)
     return vertices, indices, colors
 
 
 def test_square():
-    vertices = torch.tensor(
-        [
-            [0.1, 0.1, 0],
-            [0.1, 0.9, 0],
-            [0.9, 0.1, 0],
-            [0.9, 0.9, 0],
-        ],
+    vertices = (
+        torch.tensor(
+            [
+                [0.1, 0.1, 0],
+                [0.1, 0.9, 0],
+                [0.9, 0.1, 0],
+                [0.9, 0.9, 0],
+            ],
+        )
+        * 2
+        - 1
     )
     indices = torch.tensor(
         [[0, 1, 2], [1, 2, 3]],
@@ -154,7 +161,7 @@ def test_square():
             [1, 1, 1],
         ],
     )
-    vertices = add_w(vertices) * 2 - 1
+    vertices = add_w(vertices)
     return vertices, indices, colors
 
 
