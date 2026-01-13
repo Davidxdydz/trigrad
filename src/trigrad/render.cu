@@ -278,9 +278,9 @@ void sort_depth_ranges(
     void *tmp_storage = nullptr;
     size_t tmp_storage_bytes = 0;
     cub::DeviceSegmentedSort::StableSortPairs(tmp_storage, tmp_storage_bytes, keys_in, keys_out, values_in, values_out, num_items, num_segments, offsets, offsets + 1);
-    cudaMalloc(&tmp_storage, tmp_storage_bytes);
+    // use torch to allocate temporary storage to use torch memory pool
+    tmp_storage = torch::empty({int(tmp_storage_bytes)}, torch::TensorOptions(torch::kUInt8).device(torch::kCUDA)).data_ptr();
     cub::DeviceSegmentedSort::StableSortPairs(tmp_storage, tmp_storage_bytes, keys_in, keys_out, values_in, values_out, num_items, num_segments, offsets, offsets + 1);
-    cudaFree(tmp_storage);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> per_tile_lists(torch::Tensor vertices, torch::Tensor indices, int width, int height, const int tile_width, const int tile_height)
