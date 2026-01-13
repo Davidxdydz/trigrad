@@ -23,6 +23,21 @@ static __device__ inline constexpr scalar max_opacity = 0.9999;
 
 constexpr scalar eff_zero = std::numeric_limits<scalar>::min();
 
+#define gpuErrchk(ans)                        \
+    {                                         \
+        gpuAssert((ans), __FILE__, __LINE__); \
+    }
+
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true)
+{
+    if (code != cudaSuccess)
+    {
+        fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+        if (abort)
+            exit(code);
+    }
+}
+
 __host__ __device__ inline vec3 operator*(const vec3 &a, const vec3 &b)
 {
 
@@ -53,6 +68,27 @@ __host__ __device__ inline vec4 operator*(const vec4 &a, const vec4 &b)
     vec4 result = {a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w};
 
     return result;
+}
+
+__host__ __device__ inline vec4 operator*(const scalar &a, const vec4 &b)
+{
+
+    vec4 result = {a * b.x, a * b.y, a * b.z, a * b.w};
+
+    return result;
+}
+
+__host__ __device__ inline vec4 operator+(const vec4 &a, const vec4 &b)
+{
+
+    vec4 result = {a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w};
+
+    return result;
+}
+__host__ __device__ inline vec4 operator/(const vec4 &a, const scalar &b)
+{
+
+    return {a.x / b, a.y / b, a.z / b, a.w / b};
 }
 
 __host__ __device__ inline vec3 operator*(const scalar &a, const vec3 &b)
@@ -199,6 +235,12 @@ __host__ __device__ inline vec3 interpolate3(vec3 bary, vec3 a, vec3 b, vec3 c, 
     scalar denom = bary.x * w.x + bary.y * w.y + bary.z * w.z;
     return (bary.x * a * w.x + bary.y * b * w.y + bary.z * c * w.z) / denom;
 }
+__host__ __device__ inline vec4 interpolate3(vec3 bary, vec4 a, vec4 b, vec4 c, vec3 w = {1, 1, 1})
+{
+
+    scalar denom = bary.x * w.x + bary.y * w.y + bary.z * w.z;
+    return (bary.x * a * w.x + bary.y * b * w.y + bary.z * c * w.z) / denom;
+}
 
 __host__ __device__ inline scalar interpolate3(vec3 bary, scalar a, scalar b, scalar c, vec3 w = {1, 1, 1})
 {
@@ -255,7 +297,7 @@ __host__ __device__ inline scalar dot(const vec4 &a, const vec4 &b)
 }
 
 __host__ __device__ inline std::tuple<vec3, scalar, scalar, scalar, vec3>
-interpolate3_backward(scalar d_dinter, vec3 bary, scalar a, scalar b, scalar c, const vec3 w)
+interpolate3_backward(scalar d_dinter, vec3 bary, scalar a, scalar b, scalar c, const vec3 w = {1.0, 1.0, 1.0})
 {
 
     vec3 vals = {a, b, c};
@@ -275,7 +317,7 @@ interpolate3_backward(scalar d_dinter, vec3 bary, scalar a, scalar b, scalar c, 
 }
 
 __host__ __device__ inline std::tuple<vec3, vec3, vec3, vec3, vec3>
-interpolate3_backward(vec3 d_dinter, vec3 bary, vec3 a, vec3 b, vec3 c, vec3 w)
+interpolate3_backward(vec3 d_dinter, vec3 bary, vec3 a, vec3 b, vec3 c, vec3 w = {1.0, 1.0, 1.0})
 {
 
     vec3 nom = bary.x * w.x * a + bary.y * w.y * b + bary.z * w.z * c;

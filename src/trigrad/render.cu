@@ -441,7 +441,8 @@ __device__ inline void process_forward(
     scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
     opacity = std::clamp(opacity, scalar(0.0), max_opacity);
     color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-    scalar depth = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
+    vec3 inv_w = scalar(1.0) / ws;
+    scalar depth = interpolate3(bary, inv_w.x, inv_w.y, inv_w.z);
     total_depth = total_depth + alpha * opacity * depth;
     total_weight = total_weight + alpha * opacity;
     total_color = total_color + alpha * opacity * color;
@@ -484,7 +485,8 @@ __device__ inline void process_backward(
     scalar opacity = interpolate3(bary, opacities[tri.a], opacities[tri.b], opacities[tri.c], ws);
     opacity = std::clamp(opacity, scalar(0.0), max_opacity);
     color3 color = interpolate3(bary, colors[tri.a], colors[tri.b], colors[tri.c], ws);
-    scalar z = interpolate3(bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
+    vec3 inv_w = scalar(1.0) / ws;
+    scalar z = interpolate3(bary, inv_w.x, inv_w.y, inv_w.z);
 
     scalar drgb_do = component_sum((color * alpha - s) / (1 - opacity) * grad_output[index].rgb()) + grad_output[index].a * (-final_alpha / (1 - opacity));
     alpha /= (scalar(1.0) - opacity);
@@ -515,16 +517,20 @@ __device__ inline void process_backward(
     scalar dd_dz = alpha * opacity * grad_depthmap[index] / final_weight;
     if (final_weight < eff_zero)
         dd_dz = scalar(0.0);
-    auto [dd_dz_dz_dbary, dd_dza, dd_dzb, dd_dzc, dd_dz_dz_dw] =
-        interpolate3_backward(dd_dz, bary, vertices[tri.a].z, vertices[tri.b].z, vertices[tri.c].z, ws);
+    auto [dd_dz_dz_dbary, dd_dinv_wx, dd_dinv_wy, dd_dinv_wz, dd_dz_dz_dw] =
+        interpolate3_backward(dd_dz, bary, inv_w.x, inv_w.y, inv_w.z);
+
+    scalar dd_dwx = -dd_dinv_wx / (ws.x * ws.x);
+    scalar dd_dwy = -dd_dinv_wy / (ws.y * ws.y);
+    scalar dd_dwz = -dd_dinv_wz / (ws.z * ws.z);
 
     vec3 d_dbary = d_do_do_dbary + drgb_dc_dc_dbary + dd_dz_dz_dbary;
     auto [drgb_dva_xy, drgb_dvb_xy, drgb_dvc_xy, drgb_dp] =
         barycentric_backward(d_dbary, xy(vertices[tri.a]), xy(vertices[tri.b]), xy(vertices[tri.c]), pos);
     vec3 drgb_dw = drgb_do_do_dw + drgb_dc_dc_dw + dd_dz_dz_dw;
-    vec4 drgb_dva = {drgb_dva_xy.x, drgb_dva_xy.y, dd_dza, drgb_dw.x};
-    vec4 drgb_dvb = {drgb_dvb_xy.x, drgb_dvb_xy.y, dd_dzb, drgb_dw.y};
-    vec4 drgb_dvc = {drgb_dvc_xy.x, drgb_dvc_xy.y, dd_dzc, drgb_dw.z};
+    vec4 drgb_dva = {drgb_dva_xy.x, drgb_dva_xy.y, scalar(0.0), drgb_dw.x + dd_dwx};
+    vec4 drgb_dvb = {drgb_dvb_xy.x, drgb_dvb_xy.y, scalar(0.0), drgb_dw.y + dd_dwy};
+    vec4 drgb_dvc = {drgb_dvc_xy.x, drgb_dvc_xy.y, scalar(0.0), drgb_dw.z + dd_dwz};
 
     atomicAdd4(&grad_vertices[tri.a], drgb_dva);
     atomicAdd4(&grad_vertices[tri.b], drgb_dvb);
