@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Differentiable triangule rasterizer"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = {text="MIT"}
 dependencies = ["torch"]
 authors = [{ name = "David Berger" }]
 
